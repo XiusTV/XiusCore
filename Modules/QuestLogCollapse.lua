@@ -738,17 +738,28 @@ TrySetup = function()
     Place(btn, map)
 end
 
+local watcher
+
+local function StopWatcher(frame)
+    watching = false
+    frame:SetScript("OnUpdate", nil)
+    frame:Hide()
+end
+
 local function StartWatcher()
-    if watching then
+    if watching or btn then
         return
     end
     watching = true
+    if not watcher then
+        watcher = CreateFrame("Frame")
+    end
     local elapsed = 0
     local acc = WATCH_STEP
-    local watcher = CreateFrame("Frame")
+    watcher:Show()
     watcher:SetScript("OnUpdate", function(self, dt)
         if btn or not ArrowEnabled() or StandaloneLoaded() then
-            self:SetScript("OnUpdate", nil)
+            StopWatcher(self)
             return
         end
         local step = dt or 0
@@ -756,7 +767,7 @@ local function StartWatcher()
         acc = acc + step
         if not WorldMapFrame then
             if elapsed > WATCH_LIMIT then
-                self:SetScript("OnUpdate", nil)
+                StopWatcher(self)
             end
             return
         end
@@ -766,7 +777,7 @@ local function StartWatcher()
         acc = 0
         TrySetup()
         if btn or elapsed > WATCH_LIMIT then
-            self:SetScript("OnUpdate", nil)
+            StopWatcher(self)
         end
     end)
 end
@@ -776,19 +787,26 @@ local function BindSlash()
         return
     end
     local commands = { "/qlc", "/xqc" }
-    local bound = 0
-    local i
-    for i = 1, #commands do
-        local command = commands[i]
-        local taken = false
-        local key, value
-        for key, value in pairs(_G) do
-            if type(key) == "string" and string.sub(key, 1, 6) == "SLASH_" and not IsSecret(value) and value == command then
-                taken = true
-                break
+    local taken = {}
+    if type(SlashCmdList) == "table" then
+        for name in pairs(SlashCmdList) do
+            if type(name) == "string" then
+                local index = 1
+                while true do
+                    local bound = _G["SLASH_" .. name .. index]
+                    if type(bound) ~= "string" then
+                        break
+                    end
+                    taken[bound] = true
+                    index = index + 1
+                end
             end
         end
-        if not taken then
+    end
+    local bound = 0
+    for i = 1, #commands do
+        local command = commands[i]
+        if not taken[command] then
             bound = bound + 1
             _G["SLASH_XIUSQOL_QLC" .. bound] = command
         end

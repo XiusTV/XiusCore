@@ -181,14 +181,25 @@ local function SamePerson(a, b)
     return a:lower() == b:lower()
 end
 
-local function IsFriendOrGuild(name)
+local knownPeople
+local knownAt = 0
+
+local function RememberPerson(person)
+    local short = ShortName(person)
+    if short then
+        knownPeople[lower(short)] = true
+    end
+end
+
+local function RefreshKnownPeople()
+    knownPeople = {}
     if C_FriendList and C_FriendList.GetNumFriends and C_FriendList.GetFriendInfoByIndex then
         local okN, count = pcall(C_FriendList.GetNumFriends)
         count = okN and tonumber(count) or 0
         for i = 1, count do
             local okI, info = pcall(C_FriendList.GetFriendInfoByIndex, i)
-            if okI and type(info) == "table" and SamePerson(info.name, name) then
-                return true
+            if okI and type(info) == "table" then
+                RememberPerson(info.name)
             end
         end
     elseif GetNumFriends and GetFriendInfo then
@@ -196,8 +207,8 @@ local function IsFriendOrGuild(name)
         count = okN and tonumber(count) or 0
         for i = 1, count do
             local okI, friend = pcall(GetFriendInfo, i)
-            if okI and SamePerson(friend, name) then
-                return true
+            if okI then
+                RememberPerson(friend)
             end
         end
     end
@@ -206,12 +217,24 @@ local function IsFriendOrGuild(name)
         count = okN and tonumber(count) or 0
         for i = 1, count do
             local okI, member = pcall(GetGuildRosterInfo, i)
-            if okI and SamePerson(member, name) then
-                return true
+            if okI then
+                RememberPerson(member)
             end
         end
     end
-    return false
+    knownAt = GetTime and GetTime() or 0
+end
+
+local function IsFriendOrGuild(name)
+    local now = GetTime and GetTime() or 0
+    if not knownPeople or (now - knownAt) > 20 then
+        RefreshKnownPeople()
+    end
+    local short = ShortName(name)
+    if not short then
+        return false
+    end
+    return knownPeople[lower(short)] and true or false
 end
 
 local function HidePopup(which)
@@ -942,8 +965,12 @@ events:SetScript("OnEvent", function(_, event, first, second)
             ChatFrame_AddMessageEventFilter("CHAT_MSG_EMOTE", FilterEmote)
         end
         QOL:Apply()
-    elseif event == "PLAYER_LOGIN" or event == "PLAYER_ENTERING_WORLD" then
+    elseif event == "PLAYER_LOGIN" then
         QOL:Apply()
+    elseif event == "PLAYER_ENTERING_WORLD" then
+        if presentationPending or paintPending then
+            ApplyPresentation()
+        end
     elseif event == "QUEST_DETAIL" then
         TryAcceptQuest()
     elseif event == "QUEST_PROGRESS" then
@@ -1008,7 +1035,8 @@ local pendingCvarUpdate = false
 local seenSlots = {}
 
 local function OptionOn(key)
-    return (QOL:GetDB()) and (QOL:GetDB())[key] and true or false
+    local db = QOL:GetDB()
+    return db and db[key] and true or false
 end
 
 local function PlainNumber(v)
@@ -1519,7 +1547,8 @@ local trainBtn
 local training = false
 
 local function OptionOn()
-    return (QOL:GetDB()) and (QOL:GetDB()).trainAllButton and true or false
+    local db = QOL:GetDB()
+    return db and db.trainAllButton and true or false
 end
 
 local function TrainerParent()
@@ -2017,7 +2046,8 @@ local scanQueued = false
 local scanToken = 0
 
 local function OptionOn()
-    return (QOL:GetDB()) and (QOL:GetDB()).maxRankActionBars and true or false
+    local db = QOL:GetDB()
+    return db and db.maxRankActionBars and true or false
 end
 
 local function PlainString(v)

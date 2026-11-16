@@ -573,8 +573,26 @@ XiusUI:RegisterEvent("PLAYER_LOGOUT", function()
     Flush()
 end)
 
+local hookQueued = false
+
+local function QueueHook()
+    if hookQueued then
+        return
+    end
+    hookQueued = true
+    if C_Timer and C_Timer.After then
+        C_Timer.After(0, function()
+            hookQueued = false
+            TryHook()
+        end)
+    else
+        hookQueued = false
+        TryHook()
+    end
+end
+
 XiusUI:RegisterEvent("ADDON_LOADED", function()
-    TryHook()
+    QueueHook()
 end)
 
 AG:SyncEvents()

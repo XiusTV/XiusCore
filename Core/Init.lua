@@ -13,7 +13,7 @@ BINDING_HEADER_XIUSCORE = "Xius Core"
 _G["BINDING_NAME_CLICK XiusMB_FlywheelToggle:LeftButton"] = "Open target mark wheel"
 _G["BINDING_NAME_CLICK XiusMB_FlywheelWorldToggle:LeftButton"] = "Open world marker wheel"
 
-XiusUI.VERSION = "1.0.0"
+XiusUI.VERSION = "1.0.1"
 XiusUI.TITLE = "Xius UI"
 XiusUI.isCore = true
 
