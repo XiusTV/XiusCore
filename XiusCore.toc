@@ -1,0 +1,29 @@
+## Interface: 120105, 120107, 16001
+## Title: Xius Core
+## Notes: Settings window and Quality of Life for the Xius addons. Type /xius
+## Author: Xius
+## Version: 1.0.0
+## Category: User Interface
+## Group: XiusCore
+## IconTexture: Interface\Icons\INV_Misc_Gear_01
+## LoadSavedVariablesFirst: 1
+## SavedVariables: XiusCoreDB, XiusUICoreDB
+## SavedVariablesPerCharacter: XiusUICharDB
+## AddonCompartmentFunc: XiusUI_OnAddonCompartmentClick
+## AddonCompartmentFuncOnEnter: XiusUI_OnAddonCompartmentEnter
+## AddonCompartmentFuncOnLeave: XiusUI_OnAddonCompartmentLeave
+## AllowLoadGameType: standard, forever, camelot
+
+Libs/XiusUISettingsLib.lua
+Core/Init.lua
+Core/Events.lua
+Core/Media.lua
+Core/Compat.lua
+Config/Widgets.lua
+Config/Pages.lua
+Config/Options.lua
+Modules/QualityOfLife.lua
+Modules/QuestLogCollapse.lua
+Modules/AccountGold.lua
+Core/Minimap.lua
+Config/Builtin.lua
