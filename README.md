@@ -66,41 +66,25 @@ Quality of Life, the window, the minimap button, and account gold are saved for 
 
 ## More From Xius
 
-### Xius Threat Meter
+### Xius Threat Meter - [GitHub](https://github.com/XiusTV/XiusThreatMeter) · [CurseForge](https://www.curseforge.com/wow/addons/xius-threat-meter)
 
 A threat meter. Shows who is on the enemy's threat table, how much threat each player and pet has, and warns you before you pull aggro.
 
-[GitHub](https://github.com/XiusTV/XiusThreatMeter) · [CurseForge](https://www.curseforge.com/wow/addons/xius-threat-meter)
-
-### Xius XP & Reputation Tracker
+### Xius XP & Reputation Tracker - [GitHub](https://github.com/XiusTV/XiusXPTracker) · [CurseForge](https://www.curseforge.com/wow/addons/xius-xp-and-reputation-tracker)
 
 A HUD card for level, XP, rested XP, watched faction, session rates, gold, and time-to-level.
 
-[GitHub](https://github.com/XiusTV/XiusXPTracker) · [CurseForge](https://www.curseforge.com/wow/addons/xius-xp-and-reputation-tracker)
-
-### Xius Marks Bar
+### Xius Marks Bar - [GitHub](https://github.com/XiusTV/XiusMarksBar) · [CurseForge](https://www.curseforge.com/wow/addons/xius-marks-bar)
 
 A raid marking bar. Click the flag for world markers or the star for target markers. Includes 5 / 10 / 20 pull timers, ready check, and role check.
 
-[GitHub](https://github.com/XiusTV/XiusMarksBar) · [CurseForge](https://www.curseforge.com/wow/addons/xius-marks-bar)
-
-### Xius Max Graphics
+### Xius Max Graphics - [GitHub](https://github.com/XiusTV/XiusMaxGFX) · [CurseForge](https://www.curseforge.com/wow/addons/xius-max-graphics)
 
 Graphics presets for Forever and retail. Ultimate, Balance, and Defaults raise view distance, grass, shadows, water, and image clarity, with optional loot and gathering sparkles.
 
-[GitHub](https://github.com/XiusTV/XiusMaxGFX)
-
-### Xius Kill Streak
+### Xius Kill Streak - [GitHub](https://github.com/XiusTV/XiusKillStreak) · [CurseForge](https://www.curseforge.com/wow/addons/xius-kill-streak)
 
 A ten-tier kill streak announcer for mobs and enemy players. Each tier shows a banner, plays a call, and keeps a counter for the streak and the time left.
-
-[GitHub](https://github.com/XiusTV/XiusKillStreak)
-
-### Xius Quest Collapser
-
-An arrow between the world map and the quest log. Click it to fold the list away, then click it again to open the list. The same option is included in Xius Core under Quality of Life.
-
-[GitHub](https://github.com/XiusTV/XiusQuestCollapser) · [CurseForge](https://www.curseforge.com/wow/addons/xius-quest-collapser)
 
 Their settings open from this window.
 
