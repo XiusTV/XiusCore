@@ -1,7 +1,12 @@
+local addonName, ns = ...
+
 --[[
     Enable-state helper shared with the standalone Xius addons.
     Xius UI no longer treats those addons as duplicates of a wrapper suite.
 ]]
+
+local type = type
+local pcall = pcall
 
 local function Readable(value)
     if XiusUI.Hidden and XiusUI:Hidden(value) then

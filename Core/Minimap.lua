@@ -1,7 +1,17 @@
+local addonName, ns = ...
+
 --[[
     Round minimap button. Left-click opens options. Right-click toggles movers.
-    The angle is saved on XiusCoreDB.minimapAngle.
+    Middle-click toggles Layer Swap. The angle is saved on XiusCoreDB.minimapAngle.
 ]]
+
+local type = type
+local pcall = pcall
+local rad = math.rad
+local deg = math.deg
+local cos = math.cos
+local sin = math.sin
+local atan2 = math.atan2
 
 local Media = XiusUI.Media
 local button
@@ -68,6 +78,7 @@ local function ShowTip(owner)
     GameTooltip:SetText("Xius UI", accent[1], accent[2], accent[3])
     GameTooltip:AddLine("Left-Click: Open Settings", 1, 1, 1)
     GameTooltip:AddLine("Right-Click: Toggle Frame Movers", 1, 1, 1)
+    GameTooltip:AddLine("Middle-Click: Toggle Layer Swap", 1, 1, 1)
     GameTooltip:AddLine("Drag: Move Minimap Icon", 0.8, 0.8, 0.8)
     GameTooltip:Show()
 end
@@ -86,6 +97,21 @@ local function ToggleMovers()
     local lib = _G.XiusCoreSettingsLib or _G.XiusUISettingsLib
     if lib and lib.ToggleFramesUnlocked then
         lib:ToggleFramesUnlocked()
+    end
+end
+
+local function ToggleLayerSwap()
+    local layer = _G.XiusLayerSwap
+    if layer and layer.togglePanel then
+        layer.togglePanel()
+        return
+    end
+    if SlashCmdList and SlashCmdList.XIUSLAYER then
+        SlashCmdList.XIUSLAYER("")
+        return
+    end
+    if XiusUI and XiusUI.Print then
+        XiusUI:Print("Xius Layer Swap is not loaded.", true)
     end
 end
 
@@ -139,7 +165,7 @@ local function CreateButton()
     button:SetSize(31, 31)
     button:SetFrameStrata("MEDIUM")
     button:SetFrameLevel(8)
-    button:RegisterForClicks("LeftButtonUp", "RightButtonUp")
+    button:RegisterForClicks("LeftButtonUp", "RightButtonUp", "MiddleButtonUp")
     button:RegisterForDrag("LeftButton")
 
     local background = button:CreateTexture(nil, "BACKGROUND")
@@ -212,6 +238,8 @@ local function CreateButton()
         end
         if mouseButton == "RightButton" then
             ToggleMovers()
+        elseif mouseButton == "MiddleButton" then
+            ToggleLayerSwap()
         else
             local lib = _G.XiusCoreSettingsLib or _G.XiusUISettingsLib
             if lib and lib.Toggle then
@@ -256,6 +284,8 @@ end)
 function XiusUI_OnAddonCompartmentClick(_, mouseButton)
     if mouseButton == "RightButton" then
         ToggleMovers()
+    elseif mouseButton == "MiddleButton" then
+        ToggleLayerSwap()
     else
         local lib = _G.XiusCoreSettingsLib or _G.XiusUISettingsLib
         if lib and lib.Toggle then

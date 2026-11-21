@@ -1,19 +1,21 @@
+local addonName, ns = ...
+
 --[[
     Xius UI
     Shared namespace, module registry, and saved-variable migration.
     Interface 120105 / 120107 (modern) and 16001 (WoW Forever).
 ]]
 
+local pairs = pairs
+local type = type
+local tostring = tostring
+local pcall = pcall
+local next = next
+local remove = table.remove
+
 XiusUI = XiusUI or {}
 
--- Set at file load, which is before PLAYER_LOGIN, so the Key Bindings
--- menu can group these under "Xius Core" without an XML category attribute.
-BINDING_HEADER_XIUSCORE = "Xius Core"
-
-_G["BINDING_NAME_CLICK XiusMB_FlywheelToggle:LeftButton"] = "Open target mark wheel"
-_G["BINDING_NAME_CLICK XiusMB_FlywheelWorldToggle:LeftButton"] = "Open world marker wheel"
-
-XiusUI.VERSION = "1.0.1"
+XiusUI.VERSION = "1.1.0"
 XiusUI.TITLE = "Xius UI"
 XiusUI.isCore = true
 
@@ -190,6 +192,8 @@ XiusUI.PAGE_ORDER = {
     { id = "QoL", label = "Quality of Life", icon = "Interface\\Icons\\INV_Misc_Wrench_01" },
     { id = "Graphics", label = "Max Graphics", icon = "Interface\\Icons\\INV_Misc_Gem_Pearl_03" },
     { id = "KillStreak", label = "Kill Streak", icon = "Interface\\Icons\\Ability_DualWield" },
+    { id = "SpellRanks", label = "Spell Ranks", icon = "Interface\\Icons\\INV_Misc_Book_09" },
+    { id = "LayerSwap", label = "Layer Swap", icon = "Interface\\AddOns\\XiusLayer\\Media\\logo" },
 }
 
 function XiusUI:Print(msg, important)
@@ -211,16 +215,87 @@ function XiusUI:ModuleInstalled(name)
     return self._installed[name] and true or false
 end
 
+function XiusUI:NormalizeSubTabs(spec)
+    local lib = _G.XiusCoreSettingsLib or _G.XiusUISettingsLib
+    if lib and lib.NormalizeSubTabs then
+        return lib:NormalizeSubTabs(spec)
+    end
+    if type(spec) ~= "table" or type(spec.subTabs) ~= "table" or #spec.subTabs == 0 then
+        return nil
+    end
+    local normalized = {}
+    for i = 1, #spec.subTabs do
+        local entry = spec.subTabs[i]
+        if type(entry) == "string" and entry ~= "" then
+            normalized[#normalized + 1] = {
+                id = entry,
+                text = entry,
+                label = entry,
+            }
+        elseif type(entry) == "table" then
+            local text = entry.text or entry.label or entry.title or entry.name or entry.id or (i == 1 and "General" or ("Tab " .. i))
+            local id = entry.id or entry.key or entry.value or text
+            entry.id = tostring(id)
+            entry.text = tostring(text)
+            entry.label = entry.label or entry.text
+            normalized[#normalized + 1] = entry
+        end
+    end
+    if #normalized == 0 then
+        spec.subTabs = nil
+        return nil
+    end
+    spec.subTabs = normalized
+    spec.activeSubTab = normalized[1].id
+    return normalized
+end
+
+function XiusUI:OpenPage(page, subTab)
+    local lib = _G.XiusCoreSettingsLib or _G.XiusUISettingsLib
+    if lib and lib.Open then
+        return lib:Open(page, subTab)
+    end
+    if self.OpenOptions then
+        return self:OpenOptions(page, subTab)
+    end
+end
+
+function XiusUI:TogglePage(page, subTab)
+    local lib = _G.XiusCoreSettingsLib or _G.XiusUISettingsLib
+    if lib and lib.Toggle then
+        return lib:Toggle(page, subTab)
+    end
+    if self.ToggleOptions then
+        return self:ToggleOptions(page, subTab)
+    end
+end
+
 function XiusUI:RegisterModule(name, moduleTable)
+    if type(name) == "table" then
+        self:NormalizeSubTabs(name)
+        local lib = _G.XiusCoreSettingsLib or _G.XiusUISettingsLib
+        if lib and lib.RegisterModule then
+            return lib:RegisterModule(name)
+        end
+        return nil
+    end
     if type(name) ~= "string" or name == "" then
         return
     end
     moduleTable = moduleTable or {}
-    local pageOnly = (moduleTable.label or moduleTable.build or moduleTable.blurb) and not moduleTable.ApplySettings and not moduleTable.db and not moduleTable.VERSION
+    self:NormalizeSubTabs(moduleTable)
+    local pageOnly = (moduleTable.label or moduleTable.build or moduleTable.blurb or moduleTable.subTabs) and not moduleTable.ApplySettings and not moduleTable.db and not moduleTable.VERSION
     if pageOnly then
         self._pages[name] = moduleTable
         if moduleTable.installed ~= false then
             self._installed[name] = true
+        end
+        if moduleTable.buildContent then
+            moduleTable.id = moduleTable.id or name
+            local lib = _G.XiusCoreSettingsLib or _G.XiusUISettingsLib
+            if lib and lib.RegisterModule then
+                lib:RegisterModule(moduleTable)
+            end
         end
         if self.RefreshSidebar then
             self:RefreshSidebar()
@@ -240,8 +315,15 @@ function XiusUI:RegisterModule(name, moduleTable)
         self._registered[name] = true
         self.moduleList[#self.moduleList + 1] = name
     end
-    if moduleTable.label or moduleTable.build or moduleTable.blurb then
+    if moduleTable.label or moduleTable.build or moduleTable.blurb or moduleTable.subTabs then
         self._pages[name] = moduleTable
+    end
+    if moduleTable.buildContent then
+        moduleTable.id = moduleTable.id or name
+        local lib = _G.XiusCoreSettingsLib or _G.XiusUISettingsLib
+        if lib and lib.RegisterModule then
+            lib:RegisterModule(moduleTable)
+        end
     end
     if self.RefreshSidebar then
         self:RefreshSidebar()
@@ -424,11 +506,5 @@ function XiusUI:Migrate()
 
     if imported then
         self:Print("Imported settings from your older Xius addons.")
-    end
-end
-
-function XiusUI:NoteLock(key, value)
-    if self._lockSnapshot and self._lockSnapshot[key] ~= nil then
-        self._lockSnapshot[key] = value and true or false
     end
 end

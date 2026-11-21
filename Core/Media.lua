@@ -1,6 +1,11 @@
+local addonName, ns = ...
+
 --[[
     Flat dark styling shared by the options window, minimap button, and movers.
 ]]
+
+local type = type
+local pcall = pcall
 
 local Media = {}
 XiusUI.Media = Media

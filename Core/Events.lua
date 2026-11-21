@@ -1,8 +1,15 @@
+local addonName, ns = ...
+
 --[[
     Central event dispatcher.
     Modules with their own combat-sensitive frames keep those frames.
     Shell code registers here so login, logout, and combat share one path.
 ]]
+
+local type = type
+local tostring = tostring
+local pcall = pcall
+local remove = table.remove
 
 XiusUI._handlers = XiusUI._handlers or {}
 

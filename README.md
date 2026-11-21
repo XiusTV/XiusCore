@@ -9,29 +9,42 @@ The window is meant to blend with the default UI.
 ### One settings window
 
 - **Open it anywhere:** `/xius`, `/xiuscore`, or the minimap button.
-- **Sidebar:** Threat Meter, XP & Rep, Marks Bar, Quality of Life, Max Graphics, Kill Streak, and General.
+- **Sidebar:** Threat Meter, XP & Rep, Marks Bar, Quality of Life, Flight Map, Tooltip, Max Graphics, Kill Streak, Spell Ranks, Layer Swap, and General.
 - **Installed addons** are highlighted in the sidebar and open their own settings page.
 - **Addons that are not installed** stay in the list in gray. Click one for a short description and a CurseForge link. Select URL highlights it so you can copy it.
 
 ### Quality of Life
 
 - **Vendors:** Faster loot, sell gray items, and auto repair with your gold or the guild bank.
-- **Training:** A Train All button at class and profession trainers, and action bars that move up to the highest rank you know.
+- **Training:** A Train All button at class and profession trainers.
 - **Quests and travel:** Optional auto-accept and turn-in, summons, a summon sound, non-combat resurrection, and skip on the cinematic confirmation.
 - **Group and social:** Whisper invites from keywords you choose, friend and guild invites, and declines for stranger duels, pet duels, and guild invites.
 - **Combat and interface:** Auto-release in battlegrounds, quest levels, the quest log collapse arrow, stand and dismount, easy item destroy, hidden error text, a hidden talking head, muted mount emotes, class-colored name backgrounds, and durability on the character sheet.
+
+### Flight Map
+
+- High-detail continent and zone art on the flight master map.
+- Smooth zoom and pan, with zone level ranges and cursor coordinates.
+- Works on the Forever taxi map and the retail flight map.
+
+### Tooltip
+
+- Shows a player's guild under their name on the unit tooltip.
+- Optional guild rank, with separate colors for your guild and other guilds.
 
 ### Account gold
 
 - **Bag coins stay as they are.** The backpack still shows this character's gold in the normal Blizzard coins.
 - **Hover the coins** for an account list: class-colored names, this character tagged You, richest first, your realm first, then a gold line and the account total.
 - **General settings** turn the tooltip on or off, limit it to this realm, hide characters with no gold, or prune old characters.
+- Account gold is stored in the shared `XiusUIDB` table so Forever realm shards stay merged cleanly.
 
 ### General
 
 - **Minimap button:** Left-click opens the window. Right-click unlocks or locks movable frames. Drag moves the icon.
 - **Reset Window** puts the window back in the middle of the screen.
 - **Unlock Frames** in the window header does the same thing as right-clicking the minimap button.
+- Smoked-glass settings window styled after Blizzard Options.
 
 ## Controls & Slash Commands
 

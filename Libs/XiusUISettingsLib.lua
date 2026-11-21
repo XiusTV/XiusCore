@@ -1,3 +1,5 @@
+local addonName, ns = ...
+
 --[[
     XiusUISettingsLib
     One shared settings window for Xius UI and the standalone Xius addons.
@@ -5,7 +7,28 @@
     A newer VERSION replaces an older copy.
 ]]
 
-local VERSION = 10
+local VERSION = 14
+
+local pairs = pairs
+local type = type
+local tostring = tostring
+local tonumber = tonumber
+local pcall = pcall
+local next = next
+local floor = math.floor
+local ceil = math.ceil
+local max = math.max
+local min = math.min
+local abs = math.abs
+local lower = string.lower
+local upper = string.upper
+local find = string.find
+local format = string.format
+local gsub = string.gsub
+local len = string.len
+local sub = string.sub
+local concat = table.concat
+local insert = table.insert
 
 local function Publish(lib)
     _G.XiusCoreSettingsLib = lib
@@ -24,6 +47,7 @@ Publish(Lib)
 Lib.version = VERSION
 Lib.modules = Lib.modules or {}
 Lib.order = Lib.order or {}
+Lib.pageCache = {}
 Lib.suite = Lib.suite and true or false
 Lib.profileMode = Lib.profileMode or "global"
 Lib.mode = Lib.mode or "modules"
@@ -32,12 +56,6 @@ Lib.framesUnlocked = Lib.framesUnlocked and true or false
 local GOLD = { 1, 209 / 255, 0, 1 }
 local MUTED = { 110 / 255, 115 / 255, 128 / 255, 1 }
 local CRIMSON = { 196 / 255, 30 / 255, 58 / 255, 1 }
-local CONTROL_X = 340
-local TAB_H = 26
-local TAB_Y = -34
-local TAB_X = 18
-local TAB_GAP = 4
-local SIDEBAR_TOP = -62
 local DIVIDER_X = 188
 local INSET_LEFT = 198
 local INSET_TOP = -66
@@ -100,6 +118,40 @@ Lib.catalog = {
         description = "Calls out kill streaks with a banner and sound as the chain climbs.",
         url = "https://www.curseforge.com/wow/addons/xius-kill-streak/",
     },
+    FlightMap = {
+        id = "FlightMap",
+        menuTitle = "Flight Map",
+        title = "Flight Map",
+        group = "Utilities & System",
+        order = 45,
+        builtin = true,
+        description = "Replaces the flight master map with sharper art, zoom, and zone readouts.",
+    },
+    Tooltip = {
+        id = "Tooltip",
+        menuTitle = "Tooltip",
+        title = "Tooltip",
+        group = "Utilities & System",
+        order = 46,
+        builtin = true,
+        description = "Shows a player's guild under their name on the unit tooltip.",
+    },
+    SpellRanks = {
+        id = "SpellRanks",
+        menuTitle = "Spell Ranks",
+        title = "Spell Ranks",
+        group = "Utilities & System",
+        order = 70,
+        description = "Reviews outdated action-bar ranks, keeps intentional down-ranks, and can warn you or your group.",
+    },
+    LayerSwap = {
+        id = "LayerSwap",
+        menuTitle = "Layer Swap",
+        title = "Layer Swap",
+        group = "Utilities & System",
+        order = 80,
+        description = "Shows your current layer, swaps layers without restriction, and optionally hosts swaps for others.",
+    },
     General = {
         id = "General",
         menuTitle = "General",
@@ -132,7 +184,7 @@ Lib.catalog = {
 Lib.groupOrder = {
     { title = "Core", ids = { "General", "Profiles" } },
     { title = "HUD & Combat", ids = { "Threat", "XPRep", "Marks" } },
-    { title = "Utilities & System", ids = { "QoL", "Graphics", "KillStreak" } },
+    { title = "Utilities & System", ids = { "QoL", "FlightMap", "Tooltip", "Graphics", "KillStreak", "SpellRanks", "LayerSwap" } },
     { title = "Info", ids = { "About" } },
 }
 
@@ -152,6 +204,12 @@ function Lib:IsModuleActive(id)
     if not spec or spec.suiteOwned then
         return false
     end
+    if type(spec.isInstalled) == "function" then
+        local ok, installed = pcall(spec.isInstalled)
+        if not ok or not installed then
+            return false
+        end
+    end
     return true
 end
 
@@ -160,7 +218,7 @@ function Lib:FirstActivePage()
 end
 
 local function Trim(text)
-    return (string.gsub(text or "", "^%s*(.-)%s*$", "%1"))
+    return (gsub(text or "", "^%s*(.-)%s*$", "%1"))
 end
 
 local function CopyValue(value, seen)
@@ -179,18 +237,6 @@ local function CopyValue(value, seen)
     return copy
 end
 
-local function AddonLoaded(name)
-    if C_AddOns and C_AddOns.IsAddOnLoaded then
-        local ok, loaded = pcall(C_AddOns.IsAddOnLoaded, name)
-        return ok and loaded and true or false
-    end
-    if IsAddOnLoaded then
-        local ok, loaded = pcall(IsAddOnLoaded, name)
-        return ok and loaded and true or false
-    end
-    return false
-end
-
 local function Snap(value, step, minimum, maximum)
     local n = tonumber(value) or minimum or 0
     if minimum and n < minimum then
@@ -200,7 +246,7 @@ local function Snap(value, step, minimum, maximum)
         n = maximum
     end
     if step and step > 0 then
-        n = math.floor((n / step) + 0.5) * step
+        n = floor((n / step) + 0.5) * step
     end
     return n
 end
@@ -232,6 +278,10 @@ local TITLE_BY_ID = {
     Graphics = "Max Graphics",
     QoL = "Quality of Life",
     KillStreak = "Kill Streak",
+    FlightMap = "Flight Map",
+    Tooltip = "Tooltip",
+    SpellRanks = "Spell Ranks",
+    LayerSwap = "Layer Swap",
     Quest = "Quest Log",
     General = "General",
 }
@@ -262,6 +312,53 @@ function Lib:GetTitle()
     return "Xius Core"
 end
 
+local function NormalizeSubTabs(spec)
+    if type(spec) ~= "table" or type(spec.subTabs) ~= "table" or #spec.subTabs == 0 then
+        return nil
+    end
+    local normalized = {}
+    for i = 1, #spec.subTabs do
+        local entry = spec.subTabs[i]
+        if type(entry) == "string" and entry ~= "" then
+            normalized[#normalized + 1] = {
+                id = entry,
+                text = entry,
+                label = entry,
+            }
+        elseif type(entry) == "table" then
+            local text = entry.text or entry.label or entry.title or entry.name or entry.id or (i == 1 and "General" or ("Tab " .. i))
+            local id = entry.id or entry.key or entry.value or text
+            entry.id = tostring(id)
+            entry.text = tostring(text)
+            entry.label = entry.label or entry.text
+            normalized[#normalized + 1] = entry
+        end
+    end
+    if #normalized == 0 then
+        spec.subTabs = nil
+        return nil
+    end
+    spec.subTabs = normalized
+    local current = spec.activeSubTab
+    local found = false
+    if current ~= nil then
+        for i = 1, #normalized do
+            if normalized[i].id == current then
+                found = true
+                break
+            end
+        end
+    end
+    if not found then
+        spec.activeSubTab = normalized[1].id
+    end
+    return normalized
+end
+
+function Lib:NormalizeSubTabs(spec)
+    return NormalizeSubTabs(spec)
+end
+
 function Lib:RegisterModule(spec)
     if type(spec) ~= "table" or type(spec.id) ~= "string" or spec.id == "" then
         return nil
@@ -287,6 +384,7 @@ function Lib:RegisterModule(spec)
     if entry and entry.builtin then
         spec.builtin = true
     end
+    NormalizeSubTabs(spec)
     self.modules[spec.id] = spec
     local cached = self.pageCache and self.pageCache[spec.id]
     if cached then
@@ -299,7 +397,7 @@ function Lib:RegisterModule(spec)
     end
     self:RefreshHost()
     if self.frame and self.frame:IsShown() and self.page == spec.id and not self._building then
-        self:ShowPage(spec.id)
+        self:ShowPage(spec.id, true)
     end
     return spec
 end
@@ -383,9 +481,9 @@ function Lib:RefreshHost()
     end
 end
 
-function Lib:Open(page)
+function Lib:Open(page, subTab)
     if self:UsesCoreWindow() then
-        XiusUI:OpenOptions(page)
+        XiusUI:OpenOptions(page, subTab)
         return
     end
     self.mode = "modules"
@@ -397,29 +495,34 @@ function Lib:Open(page)
         self.profileMode = XiusUI:ProfileMode()
         self:RefreshFooter()
     end
+    local targetPage = page or self.page or "General"
+    self._openingPage = true
     self.frame:Show()
-    self:ShowPage(page or "General")
+    self._openingPage = false
+    self:ShowPage(targetPage, subTab)
 end
 
-function Lib:OpenModule(id)
-    self:Open(id)
+function Lib:OpenModule(id, subTab)
+    self:Open(id, subTab)
 end
 
-function Lib:Toggle(page)
+function Lib:Toggle(page, subTab)
     if self:UsesCoreWindow() then
         if XiusUI.ToggleOptions then
-            XiusUI:ToggleOptions(page)
+            XiusUI:ToggleOptions(page, subTab)
         else
-            XiusUI:OpenOptions(page)
+            XiusUI:OpenOptions(page, subTab)
         end
         return
     end
     self:CreateWindow()
-    if self.frame and self.frame:IsShown() and (not page or self.page == page) and self.mode ~= "profiles" then
+    local spec = page and self.modules and self.modules[page]
+    local sameSubTab = not subTab or not spec or spec.activeSubTab == subTab
+    if self.frame and self.frame:IsShown() and (not page or (self.page == page and sameSubTab)) and self.mode ~= "profiles" then
         self.frame:Hide()
         return
     end
-    self:OpenModule(page)
+    self:OpenModule(page, subTab)
 end
 
 function Lib:ResetModule(id)
@@ -632,18 +735,6 @@ function Lib:RefreshFooter()
     end
 end
 
-local function SortedModules()
-    local list = Lib:ActiveModules()
-    table.sort(list, function(a, b)
-        local ao, bo = a.order or 100, b.order or 100
-        if ao == bo then
-            return (a.title or a.id) < (b.title or b.id)
-        end
-        return ao < bo
-    end)
-    return list
-end
-
 local function Tip(frame, title, text)
     if not text or text == "" or not frame.HookScript then
         return
@@ -665,21 +756,21 @@ local function Tip(frame, title, text)
 end
 
 local function WidgetAPI(parent)
-    local api = { parent = parent, y = 0, rows = {}, pageTitle = "", sawSection = false }
+    local api = {
+        parent = parent,
+        y = 0,
+        rows = {},
+        pageTitle = "",
+        sawSection = false,
+        currentSubTab = nil,
+        currentSubTabTitle = nil,
+        currentSectionTitle = nil,
+        currentSectionRow = nil,
+        explicitSubTabs = false,
+        discoveredSubTabs = {},
+    }
     local LABEL_R, LABEL_G, LABEL_B = 0.92, 0.92, 0.94
     local HELP_R, HELP_G, HELP_B = 0.62, 0.64, 0.68
-
-    local function Track(row, height, searchText)
-        row.rowHeight = height
-        row.searchText = string.lower(searchText or "")
-        row:SetHeight(height)
-        api.rows[#api.rows + 1] = row
-        row:ClearAllPoints()
-        row:SetPoint("TOPLEFT", parent, "TOPLEFT", 0, api.y)
-        row:SetPoint("RIGHT", parent, "RIGHT", 0, 0)
-        api.y = api.y - height
-        return row
-    end
 
     local function Paint(texture, r, g, b, a)
         if texture.SetColorTexture then
@@ -689,6 +780,127 @@ local function WidgetAPI(parent)
             texture:SetVertexColor(r, g, b, a)
         end
     end
+
+    local function Track(row, height, searchText)
+        row.rowHeight = height
+        row.subTab = api.currentSubTab
+        row.subTabTitle = api.currentSubTabTitle
+        row.sectionTitle = api.currentSectionTitle
+        if not row.isSection then
+            row.sectionRow = api.currentSectionRow
+        end
+        local fullSearch = searchText or ""
+        if not row.isSection then
+            if api.currentSectionTitle and api.currentSectionTitle ~= "" then
+                fullSearch = fullSearch .. " " .. api.currentSectionTitle
+            end
+            if api.currentSubTabTitle and api.currentSubTabTitle ~= "" then
+                fullSearch = fullSearch .. " " .. api.currentSubTabTitle
+            end
+        end
+        row.searchText = string.lower(fullSearch)
+        row:SetHeight(height)
+        row:EnableMouse(true)
+        if not row.isSection then
+            local searchHover = row:CreateTexture(nil, "BACKGROUND")
+            searchHover:SetPoint("TOPLEFT", row, "TOPLEFT", 12, 0)
+            searchHover:SetPoint("BOTTOMRIGHT", row, "BOTTOMRIGHT", -12, 1)
+            Paint(searchHover, 0.22, 0.18, 0.08, 0.38)
+            searchHover:Hide()
+            row.searchHover = searchHover
+            row:HookScript("OnEnter", function(self)
+                if (Lib.query or "") ~= "" and self.subTab and self.searchHover then
+                    self.searchHover:Show()
+                end
+            end)
+            row:HookScript("OnLeave", function(self)
+                if self.searchHover then
+                    self.searchHover:Hide()
+                end
+            end)
+        end
+        row:SetScript("OnMouseUp", function(self, mouseButton)
+            if mouseButton == "LeftButton" and (Lib.query or "") ~= "" and self.subTab then
+                Lib:ActivateSearchResultRow(self)
+            end
+        end)
+        api.rows[#api.rows + 1] = row
+        row:ClearAllPoints()
+        row:SetPoint("TOPLEFT", parent, "TOPLEFT", 0, api.y)
+        row:SetPoint("RIGHT", parent, "RIGHT", 0, 0)
+        api.y = api.y - height
+        return row
+    end
+
+    local function CreateSubTabSearchHeader(tabId, tabTitle)
+        local row = CreateFrame("Frame", nil, api.parent)
+        row.isSection = true
+        row.isSubTabHeader = true
+        local raw = string.upper(tabTitle or tabId or "")
+        row.rawSectionText = raw
+        local fs = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+        fs:SetPoint("TOPLEFT", row, "TOPLEFT", 16, -6)
+        fs:SetText(raw)
+        local font, _, flags = fs:GetFont()
+        if font then
+            fs:SetFont(font, 11, flags or "")
+        end
+        fs:SetTextColor(0.95, 0.78, 0.28)
+        row.sectionFS = fs
+        local line = row:CreateTexture(nil, "ARTWORK")
+        line:SetHeight(1)
+        line:SetPoint("BOTTOMLEFT", row, "BOTTOMLEFT", 16, 2)
+        line:SetPoint("BOTTOMRIGHT", row, "BOTTOMRIGHT", -16, 2)
+        Paint(line, 0.40, 0.32, 0.14, 0.55)
+        Track(row, 28, tabTitle or tabId or "")
+        row:Hide()
+        return row
+    end
+
+    function api:BeginSubTabPass(id, title)
+        self.currentSubTab = id
+        self.currentSubTabTitle = title or id
+        self.currentSectionTitle = nil
+        self.currentSectionRow = nil
+        self.sawSection = false
+        self.y = 0
+        CreateSubTabSearchHeader(id, title or id)
+    end
+
+    function api:SetSubTab(id, title)
+        if type(id) ~= "string" or id == "" then
+            return
+        end
+        self.explicitSubTabs = true
+        local label = (type(title) == "string" and title ~= "") and title or id
+        local exists = false
+        for i = 1, #self.discoveredSubTabs do
+            if self.discoveredSubTabs[i].id == id then
+                exists = true
+                break
+            end
+        end
+        if not exists then
+            self.discoveredSubTabs[#self.discoveredSubTabs + 1] = {
+                id = id,
+                text = label,
+                label = label,
+            }
+        end
+        self:BeginSubTabPass(id, label)
+    end
+
+    function api:SubTab(id, title, buildFn)
+        if type(title) == "function" then
+            buildFn = title
+            title = id
+        end
+        self:SetSubTab(id, title)
+        if type(buildFn) == "function" then
+            buildFn(self.parent, self)
+        end
+    end
+    api.AddSubTab = api.SubTab
 
     local function RowDivider(row)
         local line = row:CreateTexture(nil, "BORDER")
@@ -788,31 +1000,32 @@ local function WidgetAPI(parent)
     end
 
     function api:AddSection(text)
+        self.currentSectionTitle = text or ""
         local pageTitle = self.pageTitle or ""
-        if pageTitle ~= "" and string.lower(text or "") == string.lower(pageTitle) then
+        if not self.currentSubTab and pageTitle ~= "" and string.lower(text or "") == string.lower(pageTitle) then
             return nil
         end
         local gap = self.sawSection and 16 or 0
         self.sawSection = true
         local row = CreateFrame("Frame", nil, self.parent)
+        row.isSection = true
+        local raw = string.upper(text or "")
+        row.rawSectionText = raw
         local fs = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
         fs:SetPoint("TOPLEFT", row, "TOPLEFT", 16, -gap)
-        fs:SetText(string.upper(text or ""))
+        fs:SetText(raw)
         local font, _, flags = fs:GetFont()
         if font then
             fs:SetFont(font, 11, flags or "")
         end
         fs:SetTextColor(0.95, 0.78, 0.28)
+        row.sectionFS = fs
         local line = row:CreateTexture(nil, "ARTWORK")
         line:SetHeight(1)
         line:SetPoint("BOTTOMLEFT", row, "BOTTOMLEFT", 16, 2)
         line:SetPoint("BOTTOMRIGHT", row, "BOTTOMRIGHT", -16, 2)
-        if line.SetColorTexture then
-            line:SetColorTexture(0.40, 0.32, 0.14, 0.55)
-        else
-            line:SetTexture("Interface\\Buttons\\WHITE8X8")
-            line:SetVertexColor(0.40, 0.32, 0.14, 0.55)
-        end
+        Paint(line, 0.40, 0.32, 0.14, 0.55)
+        self.currentSectionRow = row
         return Track(row, gap + 24, text)
     end
 
@@ -871,6 +1084,9 @@ local function WidgetAPI(parent)
             if set then
                 set(self:GetChecked() and true or false)
             end
+            if (Lib.query or "") ~= "" and row.subTab then
+                Lib:ActivateSearchResultRow(row)
+            end
         end)
         row:Refresh()
         Tip(box, label, tip)
@@ -882,7 +1098,7 @@ local function WidgetAPI(parent)
         local row = CreateFrame("Frame", nil, self.parent)
         local rowHeight = StyleCaption(row, label, tip, 220)
         RowDivider(row)
-        local button = CreateFrame("Button", nil, row)
+        local button = CreateFrame("Button", nil, row, BackdropTemplateMixin and "BackdropTemplate" or nil)
         AnchorRight(button, row, 220, 24)
         if button.SetBackdrop then
             button:SetBackdrop({
@@ -924,6 +1140,9 @@ local function WidgetAPI(parent)
             caption:SetText(Caption(get and get() or nil))
         end
         button:SetScript("OnClick", function()
+            if (Lib.query or "") ~= "" and row.subTab then
+                Lib:ActivateSearchResultRow(row)
+            end
             if Lib.menu and Lib.menuButton == button and Lib.menu:IsShown() then
                 Lib:CloseDropdownMenu()
                 return
@@ -932,61 +1151,93 @@ local function WidgetAPI(parent)
                 return
             end
             Lib:CloseDropdownMenu()
-            local menu = CreateFrame("Frame", nil, UIParent, BackdropTemplateMixin and "BackdropTemplate" or nil)
-            menu:SetFrameStrata("TOOLTIP")
-            menu:SetToplevel(true)
+            local menu = Lib.menuPool
+            if not menu then
+                menu = CreateFrame("Frame", nil, UIParent, BackdropTemplateMixin and "BackdropTemplate" or nil)
+                menu:SetFrameStrata("TOOLTIP")
+                menu:SetToplevel(true)
+                menu:SetClampedToScreen(true)
+                if menu.SetBackdrop then
+                    menu:SetBackdrop({
+                        bgFile = "Interface\\Buttons\\WHITE8X8",
+                        edgeFile = "Interface\\Buttons\\WHITE8X8",
+                        edgeSize = 1,
+                        insets = { left = 1, right = 1, top = 1, bottom = 1 },
+                    })
+                    menu:SetBackdropColor(0.06, 0.06, 0.08, 0.98)
+                    menu:SetBackdropBorderColor(0.45, 0.35, 0.16, 0.9)
+                end
+                menu:EnableMouseWheel(true)
+                menu:SetScript("OnMouseWheel", function()
+                    Lib:CloseDropdownMenu()
+                end)
+                menu:SetScript("OnHide", function(self)
+                    if Lib.menu == self then
+                        Lib.menu = nil
+                        Lib.menuButton = nil
+                    end
+                    if Lib.menuCatcher then
+                        Lib.menuCatcher:Hide()
+                    end
+                end)
+                menu.choices = {}
+                Lib.menuPool = menu
+            end
             menu:SetFrameLevel((button:GetFrameLevel() or 1) + 50)
-            menu:SetClampedToScreen(true)
             local count = #(items or {})
-            menu:SetSize(220, math.max(28, count * 22 + 8))
+            menu:SetSize(220, max(28, count * 22 + 8))
+            menu:ClearAllPoints()
             menu:SetPoint("TOPRIGHT", button, "BOTTOMRIGHT", 0, -2)
-            if menu.SetBackdrop then
-                menu:SetBackdrop({
-                    bgFile = "Interface\\Buttons\\WHITE8X8",
-                    edgeFile = "Interface\\Buttons\\WHITE8X8",
-                    edgeSize = 1,
-                    insets = { left = 1, right = 1, top = 1, bottom = 1 },
-                })
-                menu:SetBackdropColor(0.06, 0.06, 0.08, 0.98)
-                menu:SetBackdropBorderColor(0.45, 0.35, 0.16, 0.9)
+            local choices = menu.choices
+            for i = count + 1, #choices do
+                choices[i]:Hide()
             end
             local selected = get and get() or nil
             for i = 1, count do
                 local item = items[i]
                 local chosen = item.value == selected
-                local choice = CreateFrame("Button", nil, menu)
-                choice:SetSize(204, 20)
-                choice:SetPoint("TOPLEFT", menu, "TOPLEFT", 8, -4 - (i - 1) * 22)
-                local wash = choice:CreateTexture(nil, "BACKGROUND")
-                wash:SetAllPoints()
-                Paint(wash, 0.06, 0.06, 0.08, 0.98)
-                local pip = choice:CreateTexture(nil, "ARTWORK")
-                pip:SetPoint("LEFT", choice, "LEFT", 0, 0)
-                pip:SetSize(2, 14)
-                Paint(pip, GOLD[1], GOLD[2], GOLD[3], chosen and 1 or 0)
-                local choiceText = choice:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
-                choiceText:SetPoint("LEFT", choice, "LEFT", 8, 0)
-                choiceText:SetPoint("RIGHT", choice, "RIGHT", -6, 0)
-                choiceText:SetJustifyH("LEFT")
-                choiceText:SetWordWrap(false)
-                choiceText:SetText(item.text or tostring(item.value))
-                if chosen then
-                    choiceText:SetTextColor(GOLD[1], GOLD[2], GOLD[3])
-                else
-                    choiceText:SetTextColor(1, 1, 1)
+                local choice = choices[i]
+                if not choice then
+                    choice = CreateFrame("Button", nil, menu)
+                    choice:SetSize(204, 20)
+                    local wash = choice:CreateTexture(nil, "BACKGROUND")
+                    wash:SetAllPoints()
+                    choice.wash = wash
+                    local pip = choice:CreateTexture(nil, "ARTWORK")
+                    pip:SetPoint("LEFT", choice, "LEFT", 0, 0)
+                    pip:SetSize(2, 14)
+                    choice.pip = pip
+                    local choiceText = choice:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+                    choiceText:SetPoint("LEFT", choice, "LEFT", 8, 0)
+                    choiceText:SetPoint("RIGHT", choice, "RIGHT", -6, 0)
+                    choiceText:SetJustifyH("LEFT")
+                    choiceText:SetWordWrap(false)
+                    choice.choiceText = choiceText
+                    choice:SetScript("OnEnter", function(self)
+                        Paint(self.wash, 0.32, 0.24, 0.08, 0.95)
+                        self.choiceText:SetTextColor(1, 1, 1)
+                    end)
+                    choice:SetScript("OnLeave", function(self)
+                        Paint(self.wash, 0.06, 0.06, 0.08, 0.98)
+                        if self.chosen then
+                            self.choiceText:SetTextColor(GOLD[1], GOLD[2], GOLD[3])
+                        else
+                            self.choiceText:SetTextColor(1, 1, 1)
+                        end
+                    end)
+                    choices[i] = choice
                 end
-                choice:SetScript("OnEnter", function()
-                    Paint(wash, 0.32, 0.24, 0.08, 0.95)
-                    choiceText:SetTextColor(1, 1, 1)
-                end)
-                choice:SetScript("OnLeave", function()
-                    Paint(wash, 0.06, 0.06, 0.08, 0.98)
-                    if chosen then
-                        choiceText:SetTextColor(GOLD[1], GOLD[2], GOLD[3])
-                    else
-                        choiceText:SetTextColor(1, 1, 1)
-                    end
-                end)
+                choice.chosen = chosen
+                choice:ClearAllPoints()
+                choice:SetPoint("TOPLEFT", menu, "TOPLEFT", 8, -4 - (i - 1) * 22)
+                Paint(choice.wash, 0.06, 0.06, 0.08, 0.98)
+                Paint(choice.pip, GOLD[1], GOLD[2], GOLD[3], chosen and 1 or 0)
+                choice.choiceText:SetText(item.text or tostring(item.value))
+                if chosen then
+                    choice.choiceText:SetTextColor(GOLD[1], GOLD[2], GOLD[3])
+                else
+                    choice.choiceText:SetTextColor(1, 1, 1)
+                end
                 choice:SetScript("OnClick", function()
                     if set then
                         set(item.value)
@@ -994,6 +1245,7 @@ local function WidgetAPI(parent)
                     row:Refresh()
                     Lib:CloseDropdownMenu()
                 end)
+                choice:Show()
             end
             local catcher = Lib.menuCatcher
             if not catcher then
@@ -1003,66 +1255,25 @@ local function WidgetAPI(parent)
                 catcher:EnableMouse(true)
                 catcher:EnableMouseWheel(true)
                 catcher:RegisterForClicks("AnyUp")
+                catcher:SetScript("OnMouseDown", function()
+                    local open = Lib.menu
+                    local owner = Lib.menuButton
+                    if open and open:IsShown() and open:IsMouseOver() then
+                        return
+                    end
+                    if owner and owner:IsShown() and owner:IsMouseOver() then
+                        Lib:CloseDropdownMenu()
+                        return
+                    end
+                    Lib:CloseDropdownMenu()
+                end)
+                catcher:SetScript("OnMouseWheel", function()
+                    Lib:CloseDropdownMenu()
+                end)
                 Lib.menuCatcher = catcher
             end
-            catcher:SetScript("OnMouseDown", function()
-                local open = Lib.menu
-                local owner = Lib.menuButton
-                if open and open:IsShown() and open:IsMouseOver() then
-                    return
-                end
-                if owner and owner:IsShown() and owner:IsMouseOver() then
-                    Lib:CloseDropdownMenu()
-                    return
-                end
-                Lib:CloseDropdownMenu()
-            end)
-            catcher:SetScript("OnMouseWheel", function()
-                Lib:CloseDropdownMenu()
-            end)
-            catcher:SetScript("OnKeyDown", function(self, key)
-                if key == "ESCAPE" then
-                    Lib:CloseDropdownMenu()
-                    if self.SetPropagateKeyboardInput then
-                        self:SetPropagateKeyboardInput(false)
-                    end
-                    return
-                end
-                if self.SetPropagateKeyboardInput then
-                    self:SetPropagateKeyboardInput(true)
-                end
-            end)
-            catcher:EnableKeyboard(true)
-            catcher:SetFrameLevel(math.max(1, (menu:GetFrameLevel() or 2) - 1))
+            catcher:SetFrameLevel(max(1, (menu:GetFrameLevel() or 2) - 1))
             catcher:Show()
-            menu:SetScript("OnKeyDown", function(self, key)
-                if key == "ESCAPE" then
-                    Lib:CloseDropdownMenu()
-                    if self.SetPropagateKeyboardInput then
-                        self:SetPropagateKeyboardInput(false)
-                    end
-                    return
-                end
-                if self.SetPropagateKeyboardInput then
-                    self:SetPropagateKeyboardInput(true)
-                end
-            end)
-            menu:EnableKeyboard(true)
-            menu:EnableMouseWheel(true)
-            menu:SetScript("OnMouseWheel", function()
-                Lib:CloseDropdownMenu()
-            end)
-            menu:SetScript("OnHide", function(self)
-                self:SetParent(nil)
-                if Lib.menu == self then
-                    Lib.menu = nil
-                    Lib.menuButton = nil
-                end
-                if Lib.menuCatcher then
-                    Lib.menuCatcher:Hide()
-                    Lib.menuCatcher:EnableKeyboard(false)
-                end
-            end)
             if Lib.scroll and not Lib.scroll._xiusDropdownWheel then
                 Lib.scroll._xiusDropdownWheel = true
                 Lib.scroll:HookScript("OnMouseWheel", function()
@@ -1126,11 +1337,25 @@ local function WidgetAPI(parent)
                     control.Back:ClearAllPoints()
                     control.Back:SetSize(16, 16)
                     control.Back:SetPoint("RIGHT", slider, "LEFT", -4, 0)
+                    if control.Back.HookScript then
+                        control.Back:HookScript("OnClick", function()
+                            if (Lib.query or "") ~= "" and row.subTab then
+                                Lib:ActivateSearchResultRow(row)
+                            end
+                        end)
+                    end
                 end
                 if control.Forward then
                     control.Forward:ClearAllPoints()
                     control.Forward:SetSize(16, 16)
                     control.Forward:SetPoint("LEFT", slider, "RIGHT", 4, 0)
+                    if control.Forward.HookScript then
+                        control.Forward:HookScript("OnClick", function()
+                            if (Lib.query or "") ~= "" and row.subTab then
+                                Lib:ActivateSearchResultRow(row)
+                            end
+                        end)
+                    end
                 end
             else
                 control:Hide()
@@ -1155,9 +1380,15 @@ local function WidgetAPI(parent)
             forward:SetPushedTexture("Interface\\Buttons\\UI-SpellbookIcon-NextPage-Down")
             back:SetScript("OnClick", function()
                 slider:SetValue(Snap((slider:GetValue() or minimum) - stride, stride, minimum, maximum))
+                if (Lib.query or "") ~= "" and row.subTab then
+                    Lib:ActivateSearchResultRow(row)
+                end
             end)
             forward:SetScript("OnClick", function()
                 slider:SetValue(Snap((slider:GetValue() or minimum) + stride, stride, minimum, maximum))
+                if (Lib.query or "") ~= "" and row.subTab then
+                    Lib:ActivateSearchResultRow(row)
+                end
             end)
         end
         slider:SetMinMaxValues(minimum, maximum)
@@ -1166,6 +1397,13 @@ local function WidgetAPI(parent)
         end
         if slider.SetObeyStepOnDrag then
             pcall(slider.SetObeyStepOnDrag, slider, true)
+        end
+        if slider.HookScript then
+            slider:HookScript("OnMouseUp", function()
+                if (Lib.query or "") ~= "" and row.subTab then
+                    Lib:ActivateSearchResultRow(row)
+                end
+            end)
         end
 
         local function Push(value, fromSlider)
@@ -1192,6 +1430,11 @@ local function WidgetAPI(parent)
             end
             if set then
                 set(n)
+            end
+        end)
+        readout:SetScript("OnEditFocusGained", function(self)
+            if (Lib.query or "") ~= "" and row.subTab then
+                Lib:ActivateSearchResultRow(row, self)
             end
         end)
         readout:SetScript("OnEnterPressed", function(self)
@@ -1228,11 +1471,17 @@ local function WidgetAPI(parent)
     function api:AddButton(label, onClick)
         local row = CreateFrame("Frame", nil, self.parent)
         local button = CreateFrame("Button", nil, row, "UIPanelButtonTemplate")
-        button:SetSize(label == "Prune / Reset Character Gold Data" and 245 or 180, label == "Prune / Reset Character Gold Data" and 24 or 22)
+        local height = label == "Prune / Reset Character Gold Data" and 24 or 22
+        button:SetSize(label == "Prune / Reset Character Gold Data" and 245 or 180, height)
         button:SetPoint("RIGHT", row, "RIGHT", -24, 0)
         button:SetText(label or "")
+        if button.GetTextWidth then
+            local textW = button:GetTextWidth() or 0
+            local minW = label == "Prune / Reset Character Gold Data" and 245 or 180
+            button:SetWidth(math.max(minW, math.ceil(textW + 28)))
+        end
         if label == "Prune / Reset Character Gold Data" then
-            local function Paint()
+            local function PaintBtn()
                 local font = button.GetFontString and button:GetFontString()
                 if not font and button.Text then
                     font = button.Text
@@ -1245,13 +1494,43 @@ local function WidgetAPI(parent)
                     font:SetWordWrap(false)
                 end
             end
-            Paint()
+            PaintBtn()
             if button.HookScript then
-                button:HookScript("OnShow", Paint)
+                button:HookScript("OnShow", PaintBtn)
             end
         end
-        button:SetScript("OnClick", onClick)
+        button:SetScript("OnClick", function(...)
+            if onClick then
+                onClick(...)
+            end
+            if (Lib.query or "") ~= "" and row.subTab then
+                Lib:ActivateSearchResultRow(row)
+            end
+        end)
         return Track(row, 30, label)
+    end
+
+    function api:AddButtonRow(label, buttonText, onClick, tip)
+        local row = CreateFrame("Frame", nil, self.parent)
+        local button = CreateFrame("Button", nil, row, "UIPanelButtonTemplate")
+        button:SetSize(140, 22)
+        button:SetText(buttonText or label or "Open")
+        local textW = button.GetTextWidth and (button:GetTextWidth() or 0) or 0
+        local btnW = math.max(120, math.ceil(textW + 28))
+        local rowHeight = StyleCaption(row, label, tip, btnW)
+        RowDivider(row)
+        AnchorRight(button, row, btnW, 22)
+        button:SetScript("OnClick", function(...)
+            if onClick then
+                onClick(...)
+            end
+            if (Lib.query or "") ~= "" and row.subTab then
+                Lib:ActivateSearchResultRow(row)
+            end
+        end)
+        Tip(button, label, tip)
+        Tip(row, label, tip)
+        return Track(row, rowHeight, (label or "") .. " " .. (buttonText or "") .. " " .. (tip or ""))
     end
 
     function api:AddButtonGroup(buttons, align)
@@ -1297,7 +1576,14 @@ local function WidgetAPI(parent)
             local button = CreateFrame("Button", nil, row, "UIPanelButtonTemplate")
             button:SetSize(width, height)
             button:SetText(text)
-            button:SetScript("OnClick", click)
+            button:SetScript("OnClick", function(...)
+                if click then
+                    click(...)
+                end
+                if (Lib.query or "") ~= "" and row.subTab then
+                    Lib:ActivateSearchResultRow(row)
+                end
+            end)
             built[#built + 1] = button
             search[#search + 1] = text
         end
@@ -1388,6 +1674,11 @@ local function WidgetAPI(parent)
         box:SetJustifyH("LEFT")
         pcall(box.SetTextInsets, box, 2, 2, 0, 0)
         box:SetText(get and get() or "")
+        box:SetScript("OnEditFocusGained", function(self)
+            if (Lib.query or "") ~= "" and row.subTab then
+                Lib:ActivateSearchResultRow(row, self)
+            end
+        end)
         box:SetScript("OnEnterPressed", function(self)
             if set then
                 set(self:GetText() or "")
@@ -1414,6 +1705,109 @@ local function WidgetAPI(parent)
     function api:EditBox(label, get, set, tip)
         return self:AddEditBox(label, get, set, tip)
     end
+    function api:AddColorPicker(label, get, set, tip)
+        local row = CreateFrame("Frame", nil, self.parent)
+        local rowHeight = StyleCaption(row, label, tip, 28)
+        RowDivider(row)
+        local swatch = CreateFrame("Button", nil, row, BackdropTemplateMixin and "BackdropTemplate" or nil)
+        AnchorRight(swatch, row, 22, 22)
+        local swatchBg
+        if swatch.SetBackdrop then
+            swatch:SetBackdrop({
+                bgFile = "Interface\\Buttons\\WHITE8X8",
+                edgeFile = "Interface\\Buttons\\WHITE8X8",
+                edgeSize = 1,
+                insets = { left = 1, right = 1, top = 1, bottom = 1 },
+            })
+            swatch:SetBackdropBorderColor(0.45, 0.35, 0.16, 0.9)
+        else
+            swatchBg = swatch:CreateTexture(nil, "BACKGROUND")
+            swatchBg:SetAllPoints()
+        end
+        local function PaintSwatch(r, g, b)
+            if swatch.SetBackdropColor then
+                swatch:SetBackdropColor(r, g, b, 1)
+            elseif swatchBg then
+                Paint(swatchBg, r, g, b, 1)
+            end
+        end
+        function row:Refresh()
+            local r, g, b = 0.9, 0.66, 0.24
+            if get then
+                local gr, gg, gb = get()
+                if type(gr) == "number" and type(gg) == "number" and type(gb) == "number" then
+                    r, g, b = gr, gg, gb
+                end
+            end
+            PaintSwatch(r, g, b)
+        end
+        swatch:SetScript("OnClick", function()
+            if not ColorPickerFrame then
+                return
+            end
+            local r, g, b = 0.9, 0.66, 0.24
+            if get then
+                local gr, gg, gb = get()
+                if type(gr) == "number" and type(gg) == "number" and type(gb) == "number" then
+                    r, g, b = gr, gg, gb
+                end
+            end
+            local function ApplyColor(nr, ng, nb)
+                PaintSwatch(nr, ng, nb)
+                if set then
+                    set(nr, ng, nb)
+                end
+            end
+            if ColorPickerFrame.SetupColorPickerAndShow then
+                ColorPickerFrame:SetupColorPickerAndShow({
+                    r = r,
+                    g = g,
+                    b = b,
+                    hasOpacity = false,
+                    swatchFunc = function()
+                        local nr, ng, nb = ColorPickerFrame:GetColorRGB()
+                        ApplyColor(nr, ng, nb)
+                    end,
+                    cancelFunc = function(previous)
+                        local pr, pg, pb = r, g, b
+                        if type(previous) == "table" then
+                            pr = previous.r or previous[1] or r
+                            pg = previous.g or previous[2] or g
+                            pb = previous.b or previous[3] or b
+                        end
+                        ApplyColor(pr, pg, pb)
+                    end,
+                })
+                return
+            end
+            ColorPickerFrame.func = function()
+                local nr, ng, nb = ColorPickerFrame:GetColorRGB()
+                ApplyColor(nr, ng, nb)
+            end
+            ColorPickerFrame.hasOpacity = false
+            ColorPickerFrame.opacityFunc = nil
+            ColorPickerFrame.previousValues = { r, g, b }
+            ColorPickerFrame.cancelFunc = function(previous)
+                local pr, pg, pb = r, g, b
+                if type(previous) == "table" then
+                    pr = previous[1] or previous.r or r
+                    pg = previous[2] or previous.g or g
+                    pb = previous[3] or previous.b or b
+                end
+                ApplyColor(pr, pg, pb)
+            end
+            ColorPickerFrame:SetColorRGB(r, g, b)
+            ColorPickerFrame:Hide()
+            ColorPickerFrame:Show()
+        end)
+        row:Refresh()
+        Tip(swatch, label, tip)
+        Tip(row, label, tip)
+        return Track(row, rowHeight, (label or "") .. " " .. (tip or ""))
+    end
+    function api:ColorPicker(label, get, set, tip)
+        return self:AddColorPicker(label, get, set, tip)
+    end
     function api:Gap(px)
         local row = CreateFrame("Frame", nil, self.parent)
         return Track(row, px or 8, "")
@@ -1421,47 +1815,161 @@ local function WidgetAPI(parent)
     return api
 end
 
+function Lib:ActivateSearchResultRow(row, focusBox)
+    if not row or not row.subTab then
+        return false
+    end
+    local spec = self.page and self.modules and self.modules[self.page]
+    if not spec then
+        return false
+    end
+    local targetTab = row.subTab
+    local changed = (spec.activeSubTab ~= targetTab)
+    spec.activeSubTab = targetTab
+    if changed and type(spec.onSubTabChanged) == "function" then
+        pcall(spec.onSubTabChanged, targetTab)
+    end
+    self.query = ""
+    if self.search then
+        self._clearingSearch = true
+        self.search:SetText("")
+        self._clearingSearch = false
+        if not focusBox and self.search.ClearFocus then
+            self.search:ClearFocus()
+        end
+    end
+    self:UpdateSubTabs(spec, true)
+    self:ApplySearch()
+    if self.scroll and row:IsShown() and row.placedY then
+        local scrollH = self.scroll:GetHeight() or 400
+        local targetScroll = max(0, abs(row.placedY) - floor(scrollH * 0.25))
+        self.scroll:SetVerticalScroll(targetScroll)
+    end
+    if focusBox and focusBox.SetFocus then
+        focusBox:SetFocus()
+    end
+    return true
+end
+
+local matchedRow = {}
+local matchedSection = {}
+local matchedSubTab = {}
+local matchedSubTabNoSection = {}
+local wipe = wipe or function(target)
+    for k in pairs(target) do
+        target[k] = nil
+    end
+end
+
 function Lib:ApplySearch()
-    local query = string.lower(self.query or "")
+    local query = Trim(lower(self.query or ""))
     local rows = self.rows
     local parent = self.activeHost or self.child
     if not rows or not parent then
         return
     end
+    local spec = self.page and self.modules and self.modules[self.page]
+    local hasSubTabs = spec and type(spec.subTabs) == "table" and #spec.subTabs > 0
+    local activeSubTab = hasSubTabs and (spec.activeSubTab or spec.subTabs[1].id) or nil
+
+    wipe(matchedRow)
+    wipe(matchedSection)
+    wipe(matchedSubTab)
+    wipe(matchedSubTabNoSection)
+    if query ~= "" then
+        for i = 1, #rows do
+            local row = rows[i]
+            if not row.isSection then
+                local hay = row.searchText or ""
+                if hay ~= "" and find(hay, query, 1, true) then
+                    matchedRow[row] = true
+                    if row.subTab then
+                        matchedSubTab[row.subTab] = true
+                    end
+                    if row.sectionRow then
+                        matchedSection[row.sectionRow] = true
+                    elseif row.subTab then
+                        matchedSubTabNoSection[row.subTab] = true
+                    end
+                end
+            end
+        end
+    end
+
+    if self.subTabButtons then
+        for i = 1, #self.subTabButtons do
+            local btn = self.subTabButtons[i]
+            if btn and btn:IsShown() then
+                btn.searchHit = (query ~= "" and btn.tabId and matchedSubTab[btn.tabId]) and true or false
+                if btn.UpdateVisual then
+                    btn:UpdateVisual()
+                end
+            end
+        end
+    end
+
+    if parent.subTabFrames then
+        for tabId, container in pairs(parent.subTabFrames) do
+            if container and container.SetShown then
+                if query == "" then
+                    container:SetShown(tabId == activeSubTab)
+                else
+                    container:SetShown(matchedSubTab[tabId] and true or false)
+                end
+            end
+        end
+    end
+
     local y = 0
     for i = 1, #rows do
         local row = rows[i]
-        local hay = row.searchText or ""
-        local show = query == "" or (hay ~= "" and string.find(hay, query, 1, true))
+        local show = false
+        if query == "" then
+            if not row.isSubTabHeader then
+                show = (not activeSubTab) or (not row.subTab) or (row.subTab == activeSubTab)
+            end
+            if row.sectionFS and row.rawSectionText then
+                row.sectionFS:SetText(row.rawSectionText)
+            end
+            if row.searchHover then
+                row.searchHover:Hide()
+            end
+        else
+            if row.isSubTabHeader then
+                show = matchedSubTabNoSection[row.subTab] and true or false
+            elseif row.isSection then
+                show = matchedSection[row] and true or false
+                if show and row.sectionFS and row.rawSectionText then
+                    if hasSubTabs and row.subTabTitle and row.subTabTitle ~= "" and lower(row.subTabTitle) ~= lower(row.sectionTitle or "") then
+                        row.sectionFS:SetText(upper(row.subTabTitle) .. "  ·  " .. row.rawSectionText)
+                    else
+                        row.sectionFS:SetText(row.rawSectionText)
+                    end
+                end
+            else
+                show = matchedRow[row] and true or false
+            end
+        end
         if show then
+            local rowParent = (row.GetParent and row:GetParent()) or parent
             row:Show()
             row:ClearAllPoints()
-            row:SetPoint("TOPLEFT", parent, "TOPLEFT", 0, y)
-            row:SetPoint("RIGHT", parent, "RIGHT", 0, 0)
+            row:SetPoint("TOPLEFT", rowParent, "TOPLEFT", 0, y)
+            row:SetPoint("RIGHT", rowParent, "RIGHT", 0, 0)
             if row.Reflow then
                 row:Reflow()
             end
+            row.placedY = y
             y = y - (row.rowHeight or 32)
         else
+            row.placedY = nil
             row:Hide()
         end
     end
-    local height = math.max(400, math.abs(y) + 40)
+    local height = max(400, abs(y) + 40)
     parent:SetHeight(height)
     if self.child and self.child ~= parent then
         self.child:SetHeight(height)
-    end
-end
-
-local function ClearChild(child)
-    local kids = { child:GetChildren() }
-    for i = 1, #kids do
-        kids[i]:Hide()
-        kids[i]:SetParent(nil)
-    end
-    local regions = { child:GetRegions() }
-    for i = 1, #regions do
-        regions[i]:Hide()
     end
 end
 
@@ -1882,7 +2390,347 @@ function Lib:CloseDropdownMenu()
     self.menuButton = nil
 end
 
-function Lib:ShowPage(pageId)
+local function PaintSubTabTex(texture, r, g, b, a)
+    if texture.SetColorTexture then
+        texture:SetColorTexture(r, g, b, a)
+    else
+        texture:SetTexture("Interface\\Buttons\\WHITE8X8")
+        texture:SetVertexColor(r, g, b, a)
+    end
+end
+
+local function CreateSubTabButton(bar)
+    local btn
+    local templated = pcall(function()
+        btn = CreateFrame("Button", nil, bar, "UIPanelButtonTemplate")
+    end)
+    if not templated or not btn then
+        btn = CreateFrame("Button", nil, bar)
+    end
+    btn:SetHeight(24)
+    btn:EnableMouse(true)
+    if btn.RegisterForClicks then
+        btn:RegisterForClicks("LeftButtonUp")
+    end
+
+    local function MakeEdge(point, relPoint, w, h)
+        local tex = btn:CreateTexture(nil, "OVERLAY")
+        if h then
+            tex:SetHeight(h)
+        end
+        if w then
+            tex:SetWidth(w)
+        end
+        PaintSubTabTex(tex, GOLD[1], GOLD[2], GOLD[3], 0.9)
+        tex:Hide()
+        return tex
+    end
+
+    local topEdge = MakeEdge("TOPLEFT", "TOPRIGHT", nil, 1)
+    topEdge:SetPoint("TOPLEFT", btn, "TOPLEFT", 1, -1)
+    topEdge:SetPoint("TOPRIGHT", btn, "TOPRIGHT", -1, -1)
+
+    local leftEdge = MakeEdge("TOPLEFT", "BOTTOMLEFT", 1, nil)
+    leftEdge:SetPoint("TOPLEFT", btn, "TOPLEFT", 1, -1)
+    leftEdge:SetPoint("BOTTOMLEFT", btn, "BOTTOMLEFT", 1, 1)
+
+    local rightEdge = MakeEdge("TOPRIGHT", "BOTTOMRIGHT", 1, nil)
+    rightEdge:SetPoint("TOPRIGHT", btn, "TOPRIGHT", -1, -1)
+    rightEdge:SetPoint("BOTTOMRIGHT", btn, "BOTTOMRIGHT", -1, 1)
+
+    btn.edges = { topEdge, leftEdge, rightEdge }
+
+    local mark = btn:CreateTexture(nil, "OVERLAY")
+    mark:SetHeight(2)
+    mark:SetPoint("BOTTOMLEFT", btn, "BOTTOMLEFT", 2, 1)
+    mark:SetPoint("BOTTOMRIGHT", btn, "BOTTOMRIGHT", -2, 1)
+    PaintSubTabTex(mark, GOLD[1], GOLD[2], GOLD[3], 1)
+    mark:Hide()
+    btn.mark = mark
+
+    local fs = (btn.GetFontString and btn:GetFontString()) or btn.Text
+    if not fs then
+        fs = btn:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+        fs:SetPoint("CENTER", btn, "CENTER", 0, 0)
+        btn.Text = fs
+    end
+    btn.label = fs
+
+    function btn:SetTabText(text)
+        if self.SetText then
+            self:SetText(text)
+        elseif self.label and self.label.SetText then
+            self.label:SetText(text)
+        end
+        self:UpdateVisual()
+    end
+
+    function btn:GetTabTextWidth(text)
+        local label = (self.GetFontString and self:GetFontString()) or self.Text or self.label
+        local measured = (label and label.GetStringWidth and label:GetStringWidth()) or 0
+        local estimated = string.len(text or "") * 6.8
+        return math.max(measured, estimated)
+    end
+
+    function btn:UpdateVisual()
+        local isSelected = self.selected and true or false
+        local isHovered = self.hovered and true or false
+        local isSearchHit = self.searchHit and true or false
+        local label = (self.GetFontString and self:GetFontString()) or self.Text or self.label
+        if isSelected then
+            self:SetAlpha(1)
+            for i = 1, #self.edges do
+                self.edges[i]:Show()
+            end
+            PaintSubTabTex(self.mark, GOLD[1], GOLD[2], GOLD[3], 1)
+            self.mark:Show()
+            if label and label.SetTextColor then
+                label:SetTextColor(GOLD[1], GOLD[2], GOLD[3])
+            end
+        elseif isHovered then
+            self:SetAlpha(1)
+            for i = 1, #self.edges do
+                self.edges[i]:Hide()
+            end
+            if isSearchHit then
+                PaintSubTabTex(self.mark, GOLD[1], GOLD[2], GOLD[3], 0.55)
+                self.mark:Show()
+            else
+                self.mark:Hide()
+            end
+            if label and label.SetTextColor then
+                label:SetTextColor(1, 0.96, 0.78)
+            end
+        elseif isSearchHit then
+            self:SetAlpha(0.95)
+            for i = 1, #self.edges do
+                self.edges[i]:Hide()
+            end
+            PaintSubTabTex(self.mark, GOLD[1], GOLD[2], GOLD[3], 0.45)
+            self.mark:Show()
+            if label and label.SetTextColor then
+                label:SetTextColor(1, 0.88, 0.50)
+            end
+        else
+            self:SetAlpha(0.84)
+            for i = 1, #self.edges do
+                self.edges[i]:Hide()
+            end
+            self.mark:Hide()
+            if label and label.SetTextColor then
+                label:SetTextColor(0.92, 0.92, 0.94)
+            end
+        end
+    end
+
+    btn:HookScript("OnEnter", function(self)
+        self.hovered = true
+        self:UpdateVisual()
+    end)
+    btn:HookScript("OnLeave", function(self)
+        self.hovered = false
+        self:UpdateVisual()
+    end)
+    btn:HookScript("OnShow", function(self)
+        self:UpdateVisual()
+    end)
+
+    return btn
+end
+
+function Lib:UpdateSubTabs(spec, active)
+    local bar = self.subTabBar
+    if not bar then
+        return false
+    end
+    local buttons = self.subTabButtons or {}
+    self.subTabButtons = buttons
+    for i = 1, #buttons do
+        buttons[i].selected = false
+        buttons[i].hovered = false
+        buttons[i].searchHit = false
+        if buttons[i].UpdateVisual then
+            buttons[i]:UpdateVisual()
+        end
+        buttons[i]:Hide()
+    end
+    if self.subTabStatus then
+        self.subTabStatus:SetText("")
+        self.subTabStatus:Hide()
+    end
+    if not active or not spec or type(spec.subTabs) ~= "table" or #spec.subTabs == 0 then
+        bar:Hide()
+        if self.scroll and self.inset then
+            self.scroll:ClearAllPoints()
+            self.scroll:SetPoint("TOPLEFT", self.inset, "TOPLEFT", 0, -46)
+            self.scroll:SetPoint("BOTTOMRIGHT", self.inset, "BOTTOMRIGHT", -22, 8)
+        end
+        return false
+    end
+    NormalizeSubTabs(spec)
+    local list = spec.subTabs
+    if not list or #list == 0 then
+        bar:Hide()
+        if self.scroll and self.inset then
+            self.scroll:ClearAllPoints()
+            self.scroll:SetPoint("TOPLEFT", self.inset, "TOPLEFT", 0, -46)
+            self.scroll:SetPoint("BOTTOMRIGHT", self.inset, "BOTTOMRIGHT", -22, 8)
+        end
+        return false
+    end
+    local current = spec.activeSubTab
+    local found = false
+    for i = 1, #list do
+        if list[i].id == current then
+            found = true
+            break
+        end
+    end
+    if not found then
+        current = list[1].id
+        spec.activeSubTab = current
+    end
+
+    local baseLevel = (self.inset and self.inset:GetFrameLevel()) or (self.frame and self.frame:GetFrameLevel()) or 1
+    bar:SetFrameLevel(baseLevel + 10)
+    bar:EnableMouse(false)
+
+    local availW = bar:GetWidth() or 0
+    if availW < 120 then
+        local frameW = (self.frame and self.frame:GetWidth()) or 860
+        availW = frameW - INSET_LEFT + INSET_RIGHT - 40
+    end
+
+    local tabH = 24
+    local gapX = 6
+    local gapY = 5
+    local x = 0
+    local y = 0
+    local lastBtn
+
+    for i = 1, #list do
+        local item = list[i]
+        local btn = buttons[i]
+        if not btn or not btn.SetTabText then
+            if btn then
+                btn:Hide()
+                btn:SetParent(nil)
+            end
+            btn = CreateSubTabButton(bar)
+            buttons[i] = btn
+        end
+        local text = item.text or item.label or item.id or "Tab"
+        if type(item.getText) == "function" then
+            local ok, value = pcall(item.getText)
+            if ok and type(value) == "string" and value ~= "" then
+                text = value
+            end
+        end
+        btn:SetTabText(text)
+        local textW = btn:GetTabTextWidth(text)
+        local minW = tonumber(item.minWidth) or 76
+        local btnW = math.max(minW, math.ceil(textW + 28))
+        if tonumber(item.width) and tonumber(item.width) > btnW then
+            btnW = tonumber(item.width)
+        end
+        if x > 0 and (x + btnW > availW) then
+            x = 0
+            y = y - (tabH + gapY)
+        end
+        btn:SetSize(btnW, tabH)
+        btn:ClearAllPoints()
+        btn:SetPoint("TOPLEFT", bar, "TOPLEFT", x, y)
+        btn:EnableMouse(true)
+        btn:SetFrameLevel(bar:GetFrameLevel() + 2)
+        x = x + btnW + gapX
+
+        local tabId = item.id
+        btn.tabId = tabId
+        btn.selected = (tabId == current)
+        btn:UpdateVisual()
+        btn:SetScript("OnClick", function()
+            Lib:CloseDropdownMenu()
+            local hadSearch = (Lib.query or "") ~= ""
+            if spec.activeSubTab == tabId and not hadSearch then
+                return
+            end
+            spec.activeSubTab = tabId
+            if hadSearch then
+                Lib.query = ""
+                if Lib.search then
+                    Lib._clearingSearch = true
+                    Lib.search:SetText("")
+                    Lib._clearingSearch = false
+                    if Lib.search.ClearFocus then
+                        Lib.search:ClearFocus()
+                    end
+                end
+            end
+            if type(spec.onSubTabChanged) == "function" then
+                pcall(spec.onSubTabChanged, tabId)
+            end
+            Lib:ShowPage(spec.id, tabId)
+        end)
+        btn:Show()
+        lastBtn = btn
+    end
+
+    if self.subTabStatus and type(spec.getSubTabStatus) == "function" then
+        local ok, text, r, g, b = pcall(spec.getSubTabStatus, spec)
+        if ok and type(text) == "string" and text ~= "" then
+            self.subTabStatus:SetText(text)
+            local statusW = math.max(80, (self.subTabStatus:GetStringWidth() or (string.len(text) * 6.5)) + 16)
+            self.subTabStatus:ClearAllPoints()
+            if lastBtn and (x + statusW <= availW) then
+                self.subTabStatus:SetPoint("LEFT", lastBtn, "RIGHT", 12, 0)
+                self.subTabStatus:SetPoint("RIGHT", bar, "RIGHT", -4, y)
+            else
+                y = y - (tabH + gapY)
+                self.subTabStatus:SetPoint("TOPLEFT", bar, "TOPLEFT", 0, y - 4)
+                self.subTabStatus:SetPoint("TOPRIGHT", bar, "TOPRIGHT", -4, y - 4)
+            end
+            self.subTabStatus:SetTextColor(r or GOLD[1], g or GOLD[2], b or GOLD[3])
+            self.subTabStatus:Show()
+        end
+    end
+
+    local barH = math.abs(y) + tabH + 6
+    bar:SetHeight(barH)
+    bar:Show()
+    if self.scroll and self.inset then
+        self.scroll:ClearAllPoints()
+        self.scroll:SetPoint("TOPLEFT", self.inset, "TOPLEFT", 0, -(10 + barH + 6))
+        self.scroll:SetPoint("BOTTOMRIGHT", self.inset, "BOTTOMRIGHT", -22, 8)
+    end
+    return true
+end
+
+local function ResolveSubTab(spec, requested)
+    if not spec or type(spec.subTabs) ~= "table" or #spec.subTabs == 0 then
+        return nil
+    end
+    local list = spec.subTabs
+    if requested == true then
+        local current = spec.activeSubTab
+        for i = 1, #list do
+            if list[i].id == current then
+                return current
+            end
+        end
+        return list[1].id
+    end
+    if type(requested) == "string" and requested ~= "" then
+        local lowerReq = string.lower(requested)
+        for i = 1, #list do
+            if list[i].id == requested or string.lower(list[i].id or "") == lowerReq or string.lower(list[i].text or "") == lowerReq then
+                return list[i].id
+            end
+        end
+    end
+    return list[1].id
+end
+
+function Lib:ShowPage(pageId, subTab)
     if self._building then
         return
     end
@@ -1894,7 +2742,19 @@ function Lib:ShowPage(pageId)
     if not pageId or not (self:CatalogEntry(pageId) or self:IsModuleActive(pageId)) then
         pageId = "General"
     end
-    local rebuild = self.page == pageId
+    local entry = self:CatalogEntry(pageId)
+    local spec = self.modules[pageId]
+    local active = self:IsModuleActive(pageId)
+    if spec and type(spec.subTabs) == "table" and #spec.subTabs > 0 then
+        NormalizeSubTabs(spec)
+    end
+    local hasSubTabs = active and spec and type(spec.subTabs) == "table" and #spec.subTabs > 0
+    local resolvedSubTab
+    if hasSubTabs then
+        resolvedSubTab = ResolveSubTab(spec, subTab)
+        spec.activeSubTab = resolvedSubTab
+    end
+    local rebuild = (self.page == pageId and not hasSubTabs) or (spec and spec.noCache and true or false)
     self.page = pageId
     local child = self.child
     if not child then
@@ -1909,18 +2769,22 @@ function Lib:ShowPage(pageId)
             self.pageCache[pageId] = nil
         end
     end
-    local entry = self:CatalogEntry(pageId)
-    local spec = self.modules[pageId]
-    local active = self:IsModuleActive(pageId)
     local title = (spec and (spec.menuTitle or spec.title)) or (entry and (entry.menuTitle or entry.title)) or ""
+    local usedSubTabs = self:UpdateSubTabs(spec, active)
     if self.pageTitle then
-        self.pageTitle:SetFontObject(GameFontNormalLarge)
-        local font, _, flags = self.pageTitle:GetFont()
-        if font then
-            self.pageTitle:SetFont(font, 16, flags or "")
+        if usedSubTabs or (spec and spec.hidePageTitle) then
+            self.pageTitle:SetText("")
+            self.pageTitle:Hide()
+        else
+            self.pageTitle:SetFontObject(GameFontNormalLarge)
+            local font, _, flags = self.pageTitle:GetFont()
+            if font then
+                self.pageTitle:SetFont(font, 16, flags or "")
+            end
+            self.pageTitle:SetTextColor(GOLD[1], GOLD[2], GOLD[3])
+            self.pageTitle:SetText(title)
+            self.pageTitle:Show()
         end
-        self.pageTitle:SetTextColor(GOLD[1], GOLD[2], GOLD[3])
-        self.pageTitle:SetText(title)
     end
     if self.activeHost then
         self.activeHost:Hide()
@@ -1955,10 +2819,56 @@ function Lib:ShowPage(pageId)
     elseif pageId == "About" then
         self.rows = {}
         self:BuildAboutCard(host)
-    elseif active and spec and type(spec.buildContent) == "function" then
-        local ok, err = pcall(spec.buildContent, host, api, spec)
-        if not ok then
-            api:AddNote("This page hit an error: " .. tostring(err))
+    elseif active and spec and (hasSubTabs or type(spec.buildContent) == "function") then
+        if hasSubTabs then
+            local list = spec.subTabs
+            for i = 1, #list do
+                local tab = list[i]
+                local tabTitle = tab.text or tab.label or tab.id
+                spec.activeSubTab = tab.id
+                api:BeginSubTabPass(tab.id, tabTitle)
+                local startRow = #api.rows + 1
+                local builder = tab.build or tab.buildContent or spec.buildContent
+                if type(builder) == "function" then
+                    local ok, err = pcall(builder, host, api, spec, tab.id)
+                    if not ok then
+                        api:AddNote("This page hit an error: " .. tostring(err))
+                    end
+                end
+                for r = startRow, #api.rows do
+                    local row = api.rows[r]
+                    if row and not row.subTab then
+                        row.subTab = tab.id
+                        row.subTabTitle = tabTitle
+                        if not row.isSection and tabTitle and tabTitle ~= "" then
+                            local existingSearch = row.searchText or ""
+                            local lowerTitle = string.lower(tabTitle)
+                            if not string.find(existingSearch, lowerTitle, 1, true) then
+                                row.searchText = existingSearch ~= "" and (existingSearch .. " " .. lowerTitle) or lowerTitle
+                            end
+                        end
+                    end
+                end
+                if api.explicitSubTabs then
+                    break
+                end
+            end
+            spec.activeSubTab = resolvedSubTab
+        else
+            local ok, err = pcall(spec.buildContent, host, api, spec)
+            if not ok then
+                api:AddNote("This page hit an error: " .. tostring(err))
+            end
+            if #api.discoveredSubTabs > 0 and (not spec.subTabs or #spec.subTabs == 0) then
+                spec.subTabs = api.discoveredSubTabs
+                NormalizeSubTabs(spec)
+                spec.activeSubTab = ResolveSubTab(spec, subTab)
+                usedSubTabs = self:UpdateSubTabs(spec, active)
+                if usedSubTabs and self.pageTitle then
+                    self.pageTitle:SetText("")
+                    self.pageTitle:Hide()
+                end
+            end
         end
         self.rows = api.rows
     elseif entry and entry.url then
@@ -2201,61 +3111,6 @@ function Lib:PlaceWindowTitle()
     end
 end
 
-local function ModeTab(parent, text, name)
-    local button = CreateFrame("Button", name, parent)
-    local label = button:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
-    label:SetText(text)
-    local width = 108
-    if label.GetStringWidth then
-        local measured = label:GetStringWidth()
-        if type(measured) == "number" and measured > 0 then
-            width = measured + 28
-        end
-    end
-    if width < 96 then
-        width = 96
-    end
-    button:SetSize(width, TAB_H)
-    local bg = button:CreateTexture(nil, "BACKGROUND")
-    bg:SetAllPoints()
-    local bar = button:CreateTexture(nil, "OVERLAY")
-    bar:SetHeight(2)
-    bar:SetPoint("BOTTOMLEFT", button, "BOTTOMLEFT", 0, 0)
-    bar:SetPoint("BOTTOMRIGHT", button, "BOTTOMRIGHT", 0, 0)
-    FillTexture(bar, GOLD[1], GOLD[2], GOLD[3], 1)
-    bar:Hide()
-    label:SetPoint("CENTER", button, "CENTER", 0, 1)
-    button.bg = bg
-    button.bar = bar
-    button.label = label
-    button.selected = false
-    function button:SetSelected(on)
-        self.selected = on and true or false
-        if self.selected then
-            FillTexture(self.bg, 0.14, 0.12, 0.08, 0.98)
-            self.label:SetTextColor(GOLD[1], GOLD[2], GOLD[3])
-            self.bar:Show()
-        else
-            FillTexture(self.bg, 0.04, 0.04, 0.05, 0.90)
-            self.label:SetTextColor(157 / 255, 157 / 255, 157 / 255)
-            self.bar:Hide()
-        end
-    end
-    button.SetTabSelected = button.SetSelected
-    button:SetScript("OnEnter", function(self)
-        if self.selected then
-            return
-        end
-        FillTexture(self.bg, 0.10, 0.09, 0.07, 0.98)
-        self.label:SetTextColor(0.92, 0.92, 0.92)
-    end)
-    button:SetScript("OnLeave", function(self)
-        self:SetSelected(self.selected)
-    end)
-    button:SetSelected(false)
-    return button
-end
-
 local function SettingsDB()
     local empty = type(XiusCoreDB) ~= "table" or next(XiusCoreDB) == nil
     if empty and type(XiusUICoreDB) == "table" and next(XiusUICoreDB) ~= nil then
@@ -2362,18 +3217,6 @@ function Lib:CreateWindow()
             Lib:CloseDropdownMenu()
         end
     end)
-    frame:HookScript("OnKeyDown", function(self, key)
-        if key == "ESCAPE" and Lib.menu and Lib.menu:IsShown() then
-            Lib:CloseDropdownMenu()
-            if self.SetPropagateKeyboardInput then
-                self:SetPropagateKeyboardInput(false)
-            end
-            return
-        end
-        if self.SetPropagateKeyboardInput then
-            self:SetPropagateKeyboardInput(true)
-        end
-    end)
     frame:SetScript("OnDragStart", function(self)
         self:StartMoving()
     end)
@@ -2382,15 +3225,25 @@ function Lib:CreateWindow()
         Lib:SaveWindow()
     end)
     frame:SetScript("OnShow", function(self)
-        self:EnableKeyboard(true)
         if self.SetTitle then
             pcall(self.SetTitle, self, "Xius Core")
         end
         PlaceWindowTitle(self)
         Lib:RefreshUnlockButton()
+        if not Lib._openingPage and Lib.page and Lib.modules and Lib.modules[Lib.page] then
+            local spec = Lib.modules[Lib.page]
+            if type(spec.subTabs) == "table" and #spec.subTabs > 0 then
+                spec.activeSubTab = spec.subTabs[1].id
+                if not Lib._building then
+                    Lib:ShowPage(Lib.page)
+                end
+            end
+        end
+        if Lib.FitChild then
+            Lib:FitChild()
+        end
     end)
-    frame:HookScript("OnHide", function(self)
-        self:EnableKeyboard(false)
+    frame:HookScript("OnHide", function()
         Lib:CloseDropdownMenu()
         Lib:SetFramesUnlocked(false)
     end)
@@ -2471,6 +3324,9 @@ function Lib:CreateWindow()
         search.Instructions:Show()
     end
     local function OnSearch(self)
+        if Lib._clearingSearch then
+            return
+        end
         Lib.query = self:GetText() or ""
         Lib:ApplySearch()
     end
@@ -2526,7 +3382,26 @@ function Lib:CreateWindow()
     end
     self.pageTitle = pageTitle
 
+    local subTabBar = CreateFrame("Frame", nil, inset)
+    subTabBar:SetPoint("TOPLEFT", inset, "TOPLEFT", 16, -10)
+    subTabBar:SetPoint("TOPRIGHT", inset, "TOPRIGHT", -24, -10)
+    subTabBar:SetHeight(30)
+    subTabBar:SetFrameLevel(inset:GetFrameLevel() + 10)
+    subTabBar:EnableMouse(false)
+    subTabBar:Hide()
+    local subTabLine = MakePanel(subTabBar, "BORDER", 1, 0.40, 0.32, 0.14, 0.65)
+    subTabLine:SetHeight(1)
+    subTabLine:SetPoint("BOTTOMLEFT", subTabBar, "BOTTOMLEFT", 0, 0)
+    subTabLine:SetPoint("BOTTOMRIGHT", subTabBar, "BOTTOMRIGHT", 0, 0)
+    local subTabStatus = subTabBar:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+    subTabStatus:SetJustifyH("RIGHT")
+    subTabStatus:SetWordWrap(false)
+    subTabStatus:Hide()
+    self.subTabBar = subTabBar
+    self.subTabStatus = subTabStatus
+
     local scroll = CreateFrame("ScrollFrame", "XiusUISettingsLibScroll", inset, "UIPanelScrollFrameTemplate")
+    scroll:SetFrameLevel(inset:GetFrameLevel() + 2)
     scroll:SetPoint("TOPLEFT", inset, "TOPLEFT", 0, -46)
     scroll:SetPoint("BOTTOMRIGHT", inset, "BOTTOMRIGHT", -22, 8)
     local child = CreateFrame("Frame", nil, scroll)
@@ -2562,11 +3437,19 @@ function Lib:CreateWindow()
     end
 
     local function FitChild()
+        if Lib.page and Lib.modules and Lib.modules[Lib.page] then
+            local spec = Lib.modules[Lib.page]
+            if Lib:IsModuleActive(Lib.page) and type(spec.subTabs) == "table" and #spec.subTabs > 0 then
+                Lib:UpdateSubTabs(spec, true)
+            end
+        end
         local width = scroll:GetWidth()
         if width and width > 80 then
             child:SetWidth(width)
+            Lib:ApplySearch()
         end
     end
+    self.FitChild = FitChild
     frame:SetScript("OnSizeChanged", FitChild)
 
     local footer = CreateFrame("Frame", nil, frame)

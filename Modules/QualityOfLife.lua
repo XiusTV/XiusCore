@@ -1,3 +1,5 @@
+local addonName, ns = ...
+
 --[[
     Quality of Life
     Vendor repair and selling, Train All, max-rank bars, and the other
@@ -16,11 +18,16 @@ local pairs = pairs
 local type = type
 local tostring = tostring
 local tonumber = tonumber
+local select = select
 local pcall = pcall
 local floor = math.floor
+local max = math.max
 local format = string.format
 local lower = string.lower
 local find = string.find
+local match = string.match
+local gmatch = string.gmatch
+local gsub = string.gsub
 local wipe = wipe or function(target)
     for key in pairs(target) do
         target[key] = nil
@@ -31,21 +38,89 @@ local function Hidden(value)
     return XiusUI.Hidden and XiusUI:Hidden(value)
 end
 
-local rawSecret = issecretvalue
-local function issecretvalue(value)
-    if rawSecret then
-        local ok, secret = pcall(rawSecret, value)
-        if ok and secret then
-            return true
+local function PlainNumber(v)
+    if Hidden(v) or type(v) ~= "number" then
+        return nil
+    end
+    return v
+end
+
+local function PlainString(v)
+    if Hidden(v) or type(v) ~= "string" or v == "" then
+        return nil
+    end
+    return v
+end
+
+local function FrameShown(frame)
+    if not frame or not frame.IsShown then
+        return false
+    end
+    local ok, shown = pcall(frame.IsShown, frame)
+    if not ok or Hidden(shown) then
+        return false
+    end
+    return shown and true or false
+end
+
+local function ShopBlocked()
+    return FrameShown(BankFrame) or FrameShown(GuildBankFrame) or FrameShown(MailFrame)
+end
+
+local GOLD_ICON = "|TInterface\\MoneyFrame\\UI-GoldIcon:12:12:0:0|t"
+local SILVER_ICON = "|TInterface\\MoneyFrame\\UI-SilverIcon:12:12:0:0|t"
+local COPPER_ICON = "|TInterface\\MoneyFrame\\UI-CopperIcon:12:12:0:0|t"
+
+local function FormatCoinText(copper, allowZero)
+    if Hidden(copper) then
+        return allowZero and ("0 " .. COPPER_ICON) or nil
+    end
+    copper = floor((tonumber(copper) or 0) + 0.5)
+    if copper < 0 then
+        copper = 0
+    end
+    if not allowZero and copper <= 0 then
+        return nil
+    end
+    if C_CurrencyInfo and C_CurrencyInfo.GetCoinTextureString then
+        local ok, text = pcall(C_CurrencyInfo.GetCoinTextureString, copper)
+        if ok and type(text) == "string" and not Hidden(text) and find(text, "|T", 1, true) then
+            return text
         end
     end
-    if canaccessvalue then
-        local ok, allowed = pcall(canaccessvalue, value)
-        if ok and not allowed then
-            return true
+    if GetCoinTextureString then
+        local ok, text = pcall(GetCoinTextureString, copper)
+        if ok and type(text) == "string" and not Hidden(text) and find(text, "|T", 1, true) then
+            return text
         end
     end
-    return false
+    local gold = floor(copper / 10000)
+    local silver = floor((copper % 10000) / 100)
+    local remain = copper % 100
+    if gold > 0 then
+        return format("%d %s %02d %s %02d %s", gold, GOLD_ICON, silver, SILVER_ICON, remain, COPPER_ICON)
+    elseif silver > 0 then
+        return format("%d %s %02d %s", silver, SILVER_ICON, remain, COPPER_ICON)
+    end
+    return format("%d %s", remain, COPPER_ICON)
+end
+
+function QOL:ShowTooltip(owner, title, text)
+    if not GameTooltip or not owner then
+        return
+    end
+    GameTooltip:SetOwner(owner, "ANCHOR_RIGHT")
+    GameTooltip:SetText(title or "", 1, 0.82, 0)
+    if text and text ~= "" then
+        GameTooltip:AddLine(text, 1, 1, 1, true)
+    end
+    GameTooltip:Show()
+end
+
+function QOL:HideTooltip()
+    if GameTooltip then
+        GameTooltip:Hide()
+    end
 end
 
 local defaults = {
@@ -69,13 +144,12 @@ local defaults = {
     hideTalkingHead = false,
     muteMountEmotes = false,
     classNameBg = false,
-    durability = false,
+    durability = true,
     questLogCollapse = true,
     fasterLoot = true,
     autoSellJunk = true,
     autoRepair = true,
     trainAllButton = true,
-    maxRankActionBars = true,
 }
 
 local qolReady = false
@@ -102,7 +176,7 @@ local function DB()
             src = XiusUIDB.xprep
         end
         if type(src) == 'table' then
-            local moved = { 'fasterLoot', 'autoSellJunk', 'autoRepair', 'trainAllButton', 'maxRankActionBars' }
+            local moved = { 'fasterLoot', 'autoSellJunk', 'autoRepair', 'trainAllButton' }
             for i = 1, #moved do
                 local key = moved[i]
                 if src[key] ~= nil then
@@ -116,6 +190,10 @@ local function DB()
         if db[key] == nil then
             db[key] = value
         end
+    end
+    if not db._durabilityDefaultEnabled then
+        db.durability = true
+        db._durabilityDefaultEnabled = true
     end
     if db.repairMode ~= "guild" and db.repairMode ~= "personal" then
         db.repairMode = "personal"
@@ -132,6 +210,9 @@ function QOL:ResetDefaults()
     local db = DB()
     for key, value in pairs(defaults) do
         db[key] = value
+    end
+    if self.SetDefaultGroupRole then
+        self:SetDefaultGroupRole("NONE")
     end
     if self.Apply then
         self:Apply()
@@ -151,11 +232,17 @@ local function ShiftDown()
 end
 
 local function InFight()
-    if InCombatLockdown and InCombatLockdown() then
-        return true
+    if InCombatLockdown then
+        local ok, locked = pcall(InCombatLockdown)
+        if not ok or Hidden(locked) or locked == true then
+            return true
+        end
     end
-    if UnitAffectingCombat and UnitAffectingCombat("player") then
-        return true
+    if UnitAffectingCombat then
+        local ok, fighting = pcall(UnitAffectingCombat, "player")
+        if not ok or Hidden(fighting) or fighting == true then
+            return true
+        end
     end
     return false
 end
@@ -284,20 +371,6 @@ local function QuestMoneyBlocked()
     local ok, cost = pcall(GetQuestMoneyToGet)
     cost = ok and tonumber(cost) or 0
     return cost > 0
-end
-
-local function ShopBlocked()
-    local frames = { BankFrame, GuildBankFrame, MailFrame }
-    for i = 1, 3 do
-        local frame = frames[i]
-        if frame and frame.IsShown then
-            local ok, shown = pcall(frame.IsShown, frame)
-            if ok and shown then
-                return true
-            end
-        end
-    end
-    return false
 end
 
 local function TryAcceptQuest()
@@ -663,20 +736,28 @@ local function PrefixLevel(fontString, level)
     fontString:SetText(string.format("|cff%s[%d]|r %s", HexColor(r, g, b), level, text))
 end
 
-local function DecorateQuestButtons(root, depth)
-    if not On("questLevels") or not root or not root.GetChildren or (depth or 0) > 6 then
+local function DecorateChildButtons(depth, ...)
+    local count = select("#", ...)
+    for i = 1, count do
+        local child = select(i, ...)
+        if child then
+            local questID = child.questID or child.questId
+            local fontString = child.Text or child.Title or child.title
+            if questID and fontString then
+                PrefixLevel(fontString, QuestLevel(questID))
+            end
+            if depth < 6 and child.GetChildren then
+                DecorateChildButtons(depth + 1, child:GetChildren())
+            end
+        end
+    end
+end
+
+local function DecorateQuestButtons(root)
+    if not On("questLevels") or not root or not root.GetChildren then
         return
     end
-    local children = { root:GetChildren() }
-    for i = 1, #children do
-        local child = children[i]
-        local questID = child.questID or child.questId
-        local fontString = child.Text or child.Title or child.title
-        if questID and fontString then
-            PrefixLevel(fontString, QuestLevel(questID))
-        end
-        DecorateQuestButtons(child, (depth or 0) + 1)
-    end
+    DecorateChildButtons(1, root:GetChildren())
 end
 
 local function DecorateClassicLog()
@@ -751,46 +832,407 @@ local function PaintName(frame, unit)
     bg:Show()
 end
 
-local durabilityText
+local DURABILITY_TEXTURE = "Interface\\Durability\\UI-Durability-Icons"
 
-local function UpdateDurability()
-    if InFight() then
-        presentationPending = true
+local DURABILITY_SLOTS = {
+    { id = 1, frame = "CharacterHeadSlot", name = "Head", side = "RIGHT", part = "head" },
+    { id = 3, frame = "CharacterShoulderSlot", name = "Shoulder", side = "RIGHT", part = "shoulders" },
+    { id = 5, frame = "CharacterChestSlot", name = "Chest", side = "RIGHT", part = "chest" },
+    { id = 9, frame = "CharacterWristSlot", name = "Wrist", side = "RIGHT", part = "wrists" },
+    { id = 10, frame = "CharacterHandsSlot", name = "Hands", side = "LEFT", part = "hands" },
+    { id = 6, frame = "CharacterWaistSlot", name = "Waist", side = "LEFT", part = "waist" },
+    { id = 7, frame = "CharacterLegsSlot", name = "Legs", side = "LEFT", part = "legs" },
+    { id = 8, frame = "CharacterFeetSlot", name = "Feet", side = "LEFT", part = "feet" },
+    { id = 16, frame = "CharacterMainHandSlot", name = "Main Hand", side = "TOP", part = "weapon" },
+    { id = 17, frame = "CharacterSecondaryHandSlot", name = "Off Hand", side = "TOP" },
+    { id = 18, frame = "CharacterRangedSlot", name = "Ranged", side = "TOP" },
+}
+
+local ARMOR_PARTS = {
+    { key = "head", global = "DurabilityHead", field = "Head", w = 18, h = 22, point = "TOPRIGHT", rel = nil, relPoint = "TOPRIGHT", x = -15, y = -4, l = 0.46875, r = 0.609375, t = 0, b = 0.171875 },
+    { key = "shoulders", global = "DurabilityShoulders", field = "Shoulders", w = 48, h = 22, point = "TOP", rel = "head", relPoint = "BOTTOM", x = 0, y = 16, l = 0.609375, r = 0.984375, t = 0, b = 0.171875 },
+    { key = "chest", global = "DurabilityChest", field = "Chest", w = 20, h = 22, point = "TOP", rel = "shoulders", relPoint = "TOP", x = 0, y = -7, l = 0.46875, r = 0.625, t = 0.171875, b = 0.34375 },
+    { key = "wrists", global = "DurabilityWrists", field = "Wrists", w = 44, h = 22, point = "TOP", rel = "shoulders", relPoint = "BOTTOM", x = 0, y = 7, l = 0.625, r = 0.96875, t = 0.171875, b = 0.34375 },
+    { key = "hands", global = "DurabilityHands", field = "Hands", w = 42, h = 18, point = "TOP", rel = "wrists", relPoint = "BOTTOM", x = 0, y = 15, l = 0.46875, r = 0.796875, t = 0.34375, b = 0.484375 },
+    { key = "waist", global = "DurabilityWaist", field = "Waist", w = 16, h = 5, point = "TOP", rel = "chest", relPoint = "BOTTOM", x = 0, y = 6, l = 0.46875, r = 0.59375, t = 0.484375, b = 0.5234375 },
+    { key = "legs", global = "DurabilityLegs", field = "Legs", w = 29, h = 20, point = "TOP", rel = "waist", relPoint = "BOTTOM", x = 0, y = 2, l = 0.46875, r = 0.6953125, t = 0.53125, b = 0.6875 },
+    { key = "feet", global = "DurabilityFeet", field = "Feet", w = 41, h = 32, point = "TOP", rel = "legs", relPoint = "BOTTOM", x = 0, y = 8, l = 0.46875, r = 0.7890625, t = 0.6875, b = 0.9375 },
+    { key = "weapon", global = "DurabilityWeapon", field = "Weapon", w = 20, h = 45, point = "RIGHT", rel = "wrists", relPoint = "LEFT", x = 0, y = -6, l = 0, r = 0.140625, t = 0.5859375, b = 0.9375 },
+}
+
+local function DurabilityColor(pct)
+    local p = tonumber(pct) or 0
+    if p >= 0.85 then
+        return 46 / 255, 204 / 255, 113 / 255 -- #2ECC71 Bright Green
+    elseif p >= 0.70 then
+        return 163 / 255, 230 / 255, 53 / 255 -- #A3E635 Lime / Yellow-Green
+    elseif p >= 0.50 then
+        return 250 / 255, 204 / 255, 21 / 255 -- #FACC15 Gold / Yellow
+    elseif p >= 0.30 then
+        return 251 / 255, 146 / 255, 60 / 255 -- #FB923C Amber / Light Orange
+    elseif p >= 0.15 then
+        return 249 / 255, 115 / 255, 22 / 255 -- #F97316 Deep Orange / Coral
+    end
+    return 239 / 255, 68 / 255, 68 / 255 -- #EF4444 Crimson Red
+end
+
+local outlinedFaces
+
+local function ApplyOutlinedFont(fs, size)
+    if not fs then
         return
     end
-    if not durabilityText then
-        local parent = _G.PaperDollFrame or _G.CharacterFrame
-        if not parent then
-            return
-        end
-        durabilityText = parent:CreateFontString(nil, "OVERLAY")
-        durabilityText:SetPoint("BOTTOM", parent, "BOTTOM", 0, 8)
-        if XiusUI.Media and XiusUI.Media.Font then
-            XiusUI.Media:Font(durabilityText, 12, XiusUI.Media.accent, "")
+    if not outlinedFaces then
+        outlinedFaces = {
+            "Fonts\\FRIZQT__.TTF",
+            (XiusUI.Media and XiusUI.Media.font) or "Fonts\\FRIZQT__.TTF",
+        }
+        if type(STANDARD_TEXT_FONT) == "string" and STANDARD_TEXT_FONT ~= "" then
+            outlinedFaces[#outlinedFaces + 1] = STANDARD_TEXT_FONT
         end
     end
-    if not On("durability") or not GetInventoryItemDurability then
-        durabilityText:Hide()
-        return
+    local applied = false
+    for i = 1, #outlinedFaces do
+        local face = outlinedFaces[i]
+        if face and pcall(fs.SetFont, fs, face, size, "OUTLINE") and fs:GetFont() then
+            applied = true
+            break
+        end
     end
-    local worst
-    for slot = 1, 18 do
-        local ok, current, maximum = pcall(GetInventoryItemDurability, slot)
-        current = ok and not Hidden(current) and tonumber(current) or nil
-        maximum = ok and not Hidden(maximum) and tonumber(maximum) or nil
-        if current and maximum and maximum > 0 then
-            local pct = current / maximum
-            if not worst or pct < worst then
-                worst = pct
+    if not applied and GameFontHighlightSmall and GameFontHighlightSmall.GetFont then
+        local ok, face = pcall(GameFontHighlightSmall.GetFont, GameFontHighlightSmall)
+        if ok and face then
+            pcall(fs.SetFont, fs, face, size, "OUTLINE")
+        end
+    end
+    pcall(fs.SetShadowColor, fs, 0, 0, 0, 0.95)
+    pcall(fs.SetShadowOffset, fs, 1, -1)
+end
+
+local durabilityOverlay
+local slotLabels = {}
+local armorWidget
+local scanTooltip
+
+local function EstimateRepairCost(owner)
+    if GetRepairAllCost and FrameShown(MerchantFrame) then
+        local okCost, cost = pcall(GetRepairAllCost)
+        cost = okCost and PlainNumber(cost) or nil
+        if cost and cost > 0 then
+            return cost
+        end
+    end
+    if not scanTooltip then
+        local ok, tip = pcall(CreateFrame, "GameTooltip", "XiusCoreDurabilityScanTooltip", nil, "GameTooltipTemplate")
+        if ok and tip then
+            scanTooltip = tip
+        end
+    end
+    if not scanTooltip or not scanTooltip.SetInventoryItem then
+        return 0
+    end
+    local slotCur = owner and owner.slotCur
+    local slotMax = owner and owner.slotMax
+    local total = 0
+    for i = 1, #DURABILITY_SLOTS do
+        local slotId = DURABILITY_SLOTS[i].id
+        if not slotCur or not slotMax or ((slotCur[slotId] or 0) < (slotMax[slotId] or 0)) then
+            pcall(scanTooltip.SetOwner, scanTooltip, WorldFrame, "ANCHOR_NONE")
+            local ok, _, _, repairCost = pcall(scanTooltip.SetInventoryItem, scanTooltip, "player", slotId)
+            local cost = ok and PlainNumber(repairCost) or 0
+            if cost and cost > 0 then
+                total = total + cost
             end
         end
     end
-    if not worst then
-        durabilityText:Hide()
+    pcall(scanTooltip.Hide, scanTooltip)
+    return total
+end
+
+local function ShowArmorTooltip(owner)
+    if not GameTooltip or not owner then
         return
     end
-    durabilityText:SetText(format("Durability %d%%", floor(worst * 100 + 0.5)))
-    durabilityText:Show()
+    local totalCur = owner.totalCur or 0
+    local totalMax = owner.totalMax or 0
+    local overallPct = owner.overallPct or 1
+    local pctInt = floor(overallPct * 100 + 0.5)
+    local r, g, b = DurabilityColor(overallPct)
+
+    GameTooltip:SetOwner(owner, "ANCHOR_RIGHT")
+    GameTooltip:SetText("Armor Durability", 1, 0.82, 0)
+    if totalMax > 0 then
+        GameTooltip:AddDoubleLine("Overall Condition", format("%d%% (%d / %d)", pctInt, totalCur, totalMax), 0.9, 0.9, 0.92, r, g, b)
+        for i = 1, #DURABILITY_SLOTS do
+            local entry = DURABILITY_SLOTS[i]
+            local cur = owner.slotCur and owner.slotCur[entry.id]
+            local maxD = owner.slotMax and owner.slotMax[entry.id]
+            if cur and maxD and maxD > 0 then
+                local sp = cur / maxD
+                local sr, sg, sb = DurabilityColor(sp)
+                GameTooltip:AddDoubleLine(entry.name, format("%d / %d (%d%%)", cur, maxD, floor(sp * 100 + 0.5)), 0.78, 0.80, 0.84, sr, sg, sb)
+            end
+        end
+        if totalCur < totalMax then
+            local repairCost = EstimateRepairCost(owner)
+            local coinText = repairCost > 0 and FormatCoinText(repairCost, false) or nil
+            GameTooltip:AddLine(" ")
+            if coinText then
+                GameTooltip:AddDoubleLine("Estimated Repair", coinText, 1, 0.82, 0, 1, 1, 1)
+            else
+                GameTooltip:AddDoubleLine("Damaged Durability", format("%d pts", totalMax - totalCur), 1, 0.82, 0, 1, 0.55, 0.2)
+            end
+        else
+            GameTooltip:AddLine(" ")
+            GameTooltip:AddLine("All equipped armor is at 100%.", 0.4, 1.0, 0.4)
+        end
+    else
+        GameTooltip:AddLine("No durable gear equipped.", 0.65, 0.68, 0.72)
+    end
+    GameTooltip:Show()
+end
+
+local function PlaceArmorWidget()
+    if not armorWidget then
+        return
+    end
+    local paper = _G.PaperDollFrame
+    local wrist = _G.CharacterWristSlot
+    if wrist then
+        armorWidget:ClearAllPoints()
+        armorWidget:SetPoint("TOP", wrist, "BOTTOM", -14, -12)
+    elseif paper then
+        armorWidget:ClearAllPoints()
+        armorWidget:SetPoint("BOTTOMLEFT", paper, "BOTTOMLEFT", 10, 28)
+    end
+end
+
+local function EnsureDurabilityUI()
+    if durabilityOverlay then
+        return true
+    end
+    local paper = _G.PaperDollFrame
+    if not paper then
+        return false
+    end
+    if InFight() then
+        presentationPending = true
+        return false
+    end
+
+    durabilityOverlay = CreateFrame("Frame", nil, paper)
+    durabilityOverlay:SetAllPoints(paper)
+    durabilityOverlay:SetFrameStrata("HIGH")
+    local baseLevel = paper:GetFrameLevel() or 1
+    local modelFrame = _G.CharacterModelScene or _G.CharacterModelFrame
+    if modelFrame and modelFrame.GetFrameLevel then
+        local mLevel = modelFrame:GetFrameLevel() or baseLevel
+        if mLevel > baseLevel then
+            baseLevel = mLevel
+        end
+    end
+    durabilityOverlay:SetFrameLevel(baseLevel + 15)
+
+    for i = 1, #DURABILITY_SLOTS do
+        local info = DURABILITY_SLOTS[i]
+        local slotFrame = _G[info.frame]
+        if slotFrame then
+            local holder = CreateFrame("Frame", nil, durabilityOverlay)
+            holder:SetFrameStrata("HIGH")
+            local slotLevel = (slotFrame.GetFrameLevel and slotFrame:GetFrameLevel()) or baseLevel
+            holder:SetFrameLevel(math.max(baseLevel + 16, slotLevel + 10))
+            holder:SetSize(1, 1)
+
+            local fs = holder:CreateFontString(nil, "OVERLAY")
+            ApplyOutlinedFont(fs, 10)
+            fs:SetWordWrap(false)
+            if info.side == "RIGHT" then
+                fs:SetPoint("LEFT", slotFrame, "RIGHT", 6, 0)
+                fs:SetJustifyH("LEFT")
+            elseif info.side == "LEFT" then
+                fs:SetPoint("RIGHT", slotFrame, "LEFT", -6, 0)
+                fs:SetJustifyH("RIGHT")
+            else
+                fs:SetPoint("BOTTOM", slotFrame, "TOP", 0, 4)
+                fs:SetJustifyH("CENTER")
+            end
+            fs:Hide()
+            slotLabels[info.id] = fs
+        end
+    end
+
+    armorWidget = CreateFrame("Frame", nil, durabilityOverlay)
+    armorWidget:SetFrameStrata("HIGH")
+    local wrist = _G.CharacterWristSlot
+    local wristLevel = (wrist and wrist.GetFrameLevel and wrist:GetFrameLevel()) or baseLevel
+    armorWidget:SetFrameLevel(math.max(baseLevel + 16, wristLevel + 10))
+    armorWidget:SetSize(32, 39)
+    armorWidget:EnableMouse(true)
+    armorWidget.slotCur = {}
+    armorWidget.slotMax = {}
+
+    local manCanvas = CreateFrame("Frame", nil, armorWidget)
+    local canvasW, canvasH = 60, 75
+    if _G.DurabilityFrame and _G.DurabilityFrame.GetSize then
+        local okS, dw, dh = pcall(_G.DurabilityFrame.GetSize, _G.DurabilityFrame)
+        if okS and not Hidden(dw) and not Hidden(dh) and tonumber(dw) and tonumber(dh) and dw > 10 and dh > 10 then
+            canvasW, canvasH = dw, dh
+        end
+    end
+    manCanvas:SetSize(canvasW, canvasH)
+    manCanvas:SetScale(0.52)
+    manCanvas:SetPoint("CENTER", armorWidget, "CENTER", 0, 0)
+    armorWidget.manCanvas = manCanvas
+
+    armorWidget.parts = {}
+    local sourceMap = {}
+    if _G.DurabilityFrame then
+        sourceMap[_G.DurabilityFrame] = manCanvas
+    end
+    for i = 1, #ARMOR_PARTS do
+        local p = ARMOR_PARTS[i]
+        local tex = manCanvas:CreateTexture(nil, "ARTWORK")
+        armorWidget.parts[p.key] = tex
+        local src = _G[p.global] or (_G.DurabilityFrame and _G.DurabilityFrame[p.field])
+        if src then
+            sourceMap[src] = tex
+        end
+    end
+    for i = 1, #ARMOR_PARTS do
+        local p = ARMOR_PARTS[i]
+        local tex = armorWidget.parts[p.key]
+        local src = _G[p.global] or (_G.DurabilityFrame and _G.DurabilityFrame[p.field])
+        local cloned = false
+        if src and src.GetSize and src.GetTexCoord and src.GetPoint then
+            local okSz, sw, sh = pcall(src.GetSize, src)
+            local okTc, ulx, uly, llx, lly, urx, ury, lrx, lry = pcall(src.GetTexCoord, src)
+            local okPt, pt, relTo, relPt, ox, oy = pcall(src.GetPoint, src, 1)
+            local okTx, srcTex = pcall(src.GetTexture, src)
+            if okSz and okTc and okPt and not Hidden(sw) and not Hidden(ulx) and not Hidden(pt) and tonumber(sw) and tonumber(sh) and sw > 0 and sh > 0 then
+                local targetRel = (not Hidden(relTo) and relTo and sourceMap[relTo]) or (p.rel and armorWidget.parts[p.rel]) or manCanvas
+                tex:SetSize(sw, sh)
+                tex:ClearAllPoints()
+                tex:SetPoint(pt, targetRel, (not Hidden(relPt) and relPt) or p.relPoint or pt, tonumber(ox) or p.x, tonumber(oy) or p.y)
+                tex:SetTexture((okTx and not Hidden(srcTex) and srcTex) or DURABILITY_TEXTURE)
+                tex:SetTexCoord(ulx, uly, llx, lly, urx, ury, lrx, lry)
+                cloned = true
+            end
+        end
+        if not cloned then
+            local targetRel = (p.rel and armorWidget.parts[p.rel]) or manCanvas
+            tex:SetSize(p.w, p.h)
+            tex:ClearAllPoints()
+            tex:SetPoint(p.point, targetRel, p.relPoint or p.point, p.x, p.y)
+            tex:SetTexture(DURABILITY_TEXTURE)
+            tex:SetTexCoord(p.l, p.r, p.t, p.b)
+        end
+        if tex.SetDesaturated then
+            pcall(tex.SetDesaturated, tex, true)
+        end
+        tex:Show()
+    end
+
+    local pctText = armorWidget:CreateFontString(nil, "OVERLAY")
+    ApplyOutlinedFont(pctText, 11)
+    pctText:SetWordWrap(false)
+    pctText:SetPoint("LEFT", armorWidget, "RIGHT", 8, 0)
+    pctText:SetJustifyH("LEFT")
+    armorWidget.pctText = pctText
+
+    PlaceArmorWidget()
+
+    armorWidget:SetScript("OnEnter", ShowArmorTooltip)
+    armorWidget:SetScript("OnLeave", function()
+        if GameTooltip then
+            GameTooltip:Hide()
+        end
+    end)
+
+    return true
+end
+
+local function HideDurabilityUI()
+    if not durabilityOverlay then
+        return
+    end
+    for _, fs in pairs(slotLabels) do
+        fs:Hide()
+    end
+    if armorWidget then
+        armorWidget:Hide()
+    end
+    durabilityOverlay:Hide()
+end
+
+local function UpdateDurability()
+    if not On("durability") or not GetInventoryItemDurability then
+        HideDurabilityUI()
+        return
+    end
+    local paper = _G.PaperDollFrame
+    if paper and paper.IsShown then
+        local ok, shown = pcall(paper.IsShown, paper)
+        if ok and not Hidden(shown) and not shown and durabilityOverlay then
+            return
+        end
+    end
+    if not EnsureDurabilityUI() then
+        return
+    end
+
+    durabilityOverlay:Show()
+    PlaceArmorWidget()
+    local totalCur = 0
+    local totalMax = 0
+
+    for i = 1, #DURABILITY_SLOTS do
+        local info = DURABILITY_SLOTS[i]
+        local fs = slotLabels[info.id]
+        local ok, current, maximum = pcall(GetInventoryItemDurability, info.id)
+        current = ok and not Hidden(current) and tonumber(current) or nil
+        maximum = ok and not Hidden(maximum) and tonumber(maximum) or nil
+
+        if current and maximum and maximum > 0 then
+            totalCur = totalCur + current
+            totalMax = totalMax + maximum
+            armorWidget.slotCur[info.id] = current
+            armorWidget.slotMax[info.id] = maximum
+            local pct = current / maximum
+            local r, g, b = DurabilityColor(pct)
+            if fs then
+                fs:SetText(format("%d/%d", current, maximum))
+                fs:SetTextColor(r, g, b, 1)
+                fs:Show()
+            end
+        else
+            armorWidget.slotCur[info.id] = nil
+            armorWidget.slotMax[info.id] = nil
+            if fs then
+                fs:Hide()
+            end
+        end
+    end
+
+    local overallPct = (totalMax > 0) and (totalCur / totalMax) or 1
+    local pctInt = floor(overallPct * 100 + 0.5)
+    local r, g, b = DurabilityColor(overallPct)
+    armorWidget.totalCur = totalCur
+    armorWidget.totalMax = totalMax
+    armorWidget.overallPct = overallPct
+
+    if armorWidget.parts then
+        for _, tex in pairs(armorWidget.parts) do
+            if tex.SetDesaturated then
+                pcall(tex.SetDesaturated, tex, true)
+            end
+            tex:SetVertexColor(r, g, b, 0.95)
+            tex:Show()
+        end
+    end
+
+    armorWidget.pctText:SetText(format("%d%%", pctInt))
+    armorWidget.pctText:SetTextColor(r, g, b, 1)
+    armorWidget:Show()
 end
 
 local function ApplyPresentation()
@@ -834,8 +1276,8 @@ function QOL:Apply()
     if self.ApplyTrainAllSettings then
         self:ApplyTrainAllSettings()
     end
-    if self.ApplyMaxRankSettings then
-        self:ApplyMaxRankSettings()
+    if self.ApplyRoleSettings then
+        self:ApplyRoleSettings()
     end
 end
 
@@ -899,7 +1341,14 @@ local function FilterEmote(_, _, message, sender)
         return false
     end
     local text = lower(message)
-    local mine = ShortName(UnitName("player"))
+    local rawName
+    if UnitName then
+        local ok, value = pcall(UnitName, "player")
+        if ok then
+            rawName = value
+        end
+    end
+    local mine = ShortName(rawName)
     if Hidden(mine) then
         mine = nil
     end
@@ -913,7 +1362,7 @@ local function FilterEmote(_, _, message, sender)
     return false
 end
 
-local events = CreateFrame("Frame")
+local qolEventFrame = CreateFrame("Frame")
 local OPTIONAL = {
     { "QUEST_DETAIL", "autoQuest" },
     { "QUEST_PROGRESS", "autoQuest" },
@@ -933,30 +1382,49 @@ local OPTIONAL = {
     { "UI_ERROR_MESSAGE", "standDismount" },
     { "QUEST_LOG_UPDATE", "questLevels" },
     { "PLAYER_TARGET_CHANGED", "classNameBg" },
+    { "UPDATE_INVENTORY_DURABILITY", "durability" },
+    { "PLAYER_EQUIPMENT_CHANGED", "durability" },
     { "UNIT_INVENTORY_CHANGED", "durability" },
 }
 local optionalOn = {}
 
+local onLootVendorEvent
+local onTrainerEvent
+local onRoleEvent
+
 function QOL:SyncEvents()
+    local roleActive = self.GetDefaultGroupRole and self:GetDefaultGroupRole() ~= "NONE"
     for i = 1, #OPTIONAL do
         local event = OPTIONAL[i][1]
         local want = On(OPTIONAL[i][2])
+        if event == "GROUP_ROSTER_UPDATE" and roleActive then
+            want = true
+        end
         if want and not optionalOn[event] then
-            if pcall(events.RegisterEvent, events, event) then
+            if pcall(qolEventFrame.RegisterEvent, qolEventFrame, event) then
                 optionalOn[event] = true
             end
         elseif (not want) and optionalOn[event] then
-            pcall(events.UnregisterEvent, events, event)
+            pcall(qolEventFrame.UnregisterEvent, qolEventFrame, event)
             optionalOn[event] = nil
         end
     end
 end
 
-pcall(events.RegisterEvent, events, "ADDON_LOADED")
-pcall(events.RegisterEvent, events, "PLAYER_LOGIN")
-pcall(events.RegisterEvent, events, "PLAYER_ENTERING_WORLD")
-pcall(events.RegisterEvent, events, "PLAYER_REGEN_ENABLED")
-events:SetScript("OnEvent", function(_, event, first, second)
+pcall(qolEventFrame.RegisterEvent, qolEventFrame, "ADDON_LOADED")
+pcall(qolEventFrame.RegisterEvent, qolEventFrame, "PLAYER_LOGIN")
+pcall(qolEventFrame.RegisterEvent, qolEventFrame, "PLAYER_ENTERING_WORLD")
+pcall(qolEventFrame.RegisterEvent, qolEventFrame, "PLAYER_REGEN_ENABLED")
+qolEventFrame:SetScript("OnEvent", function(_, event, first, second, third, fourth)
+    if onLootVendorEvent then
+        onLootVendorEvent(event, first)
+    end
+    if onTrainerEvent then
+        onTrainerEvent(event, first)
+    end
+    if onRoleEvent then
+        onRoleEvent(event, first, second, third, fourth)
+    end
     if event == "ADDON_LOADED" and (first == "XiusUI" or first == "XiusCore") then
         DB()
         InstallHooks()
@@ -1007,8 +1475,14 @@ events:SetScript("OnEvent", function(_, event, first, second)
         MaybeConvertRaid()
     elseif event == "PLAYER_TARGET_CHANGED" then
         PaintName(_G.TargetFrame, "target")
+    elseif event == "UPDATE_INVENTORY_DURABILITY" or event == "PLAYER_EQUIPMENT_CHANGED" then
+        if FrameShown(_G.PaperDollFrame) then
+            UpdateDurability()
+        end
     elseif event == "UNIT_INVENTORY_CHANGED" then
-        UpdateDurability()
+        if (first == nil or first == "player") and FrameShown(_G.PaperDollFrame) then
+            UpdateDurability()
+        end
     elseif event == "QUEST_LOG_UPDATE" then
         DecorateClassicLog()
     elseif event == "PLAYER_REGEN_ENABLED" then
@@ -1039,13 +1513,6 @@ local function OptionOn(key)
     return db and db[key] and true or false
 end
 
-local function PlainNumber(v)
-    if Hidden(v) or type(v) ~= "number" then
-        return nil
-    end
-    return v
-end
-
 local function Blocked(v)
     if Hidden(v) then
         return true
@@ -1054,37 +1521,7 @@ local function Blocked(v)
 end
 
 local function CoinString(copper)
-    if Hidden(copper) then
-        return "0 " .. "|TInterface\\MoneyFrame\\UI-CopperIcon:12:12:0:0|t"
-    end
-    copper = floor((tonumber(copper) or 0) + 0.5)
-    if copper < 0 then
-        copper = 0
-    end
-    if C_CurrencyInfo and C_CurrencyInfo.GetCoinTextureString then
-        local ok, text = pcall(C_CurrencyInfo.GetCoinTextureString, copper)
-        if ok and type(text) == "string" and not Hidden(text) and find(text, "|T", 1, true) then
-            return text
-        end
-    end
-    if GetCoinTextureString then
-        local ok, text = pcall(GetCoinTextureString, copper)
-        if ok and type(text) == "string" and not Hidden(text) and find(text, "|T", 1, true) then
-            return text
-        end
-    end
-    local gold = floor(copper / 10000)
-    local silver = floor((copper % 10000) / 100)
-    local remain = copper % 100
-    local goldIcon = "|TInterface\\MoneyFrame\\UI-GoldIcon:12:12:0:0|t"
-    local silverIcon = "|TInterface\\MoneyFrame\\UI-SilverIcon:12:12:0:0|t"
-    local copperIcon = "|TInterface\\MoneyFrame\\UI-CopperIcon:12:12:0:0|t"
-    if gold > 0 then
-        return format("%s %s %02d %s %02d %s", tostring(gold), goldIcon, silver, silverIcon, remain, copperIcon)
-    elseif silver > 0 then
-        return format("%d %s %02d %s", silver, silverIcon, remain, copperIcon)
-    end
-    return tostring(remain) .. " " .. copperIcon
+    return FormatCoinText(copper, true)
 end
 
 local function BagSlotCount()
@@ -1120,8 +1557,8 @@ end
 
 local function ItemSellPrice(itemID, link, stackCount)
     itemID = PlainNumber(itemID)
-    if not itemID and link and not (issecretvalue and issecretvalue(link)) and type(link) == "string" then
-        itemID = tonumber(string.match(link, "item:(%d+)"))
+    if not itemID and link and not Hidden(link) and type(link) == "string" then
+        itemID = tonumber(match(link, "item:(%d+)"))
     end
     if not itemID then
         return 0
@@ -1129,11 +1566,6 @@ local function ItemSellPrice(itemID, link, stackCount)
     local sell
     if C_Item and C_Item.GetItemInfo then
         local ok, _, _, _, _, _, _, _, _, _, _, vendorPrice = pcall(C_Item.GetItemInfo, itemID)
-        if ok then
-            sell = vendorPrice
-        end
-    elseif GetItemInfo then
-        local ok, _, _, _, _, _, _, _, _, _, _, vendorPrice = pcall(GetItemInfo, itemID)
         if ok then
             sell = vendorPrice
         end
@@ -1147,7 +1579,7 @@ end
 local function CheckJunkSlot(bag, slot)
     if C_Container and C_Container.GetContainerItemInfo then
         local ok, info = pcall(C_Container.GetContainerItemInfo, bag, slot)
-        if not ok or (issecretvalue and issecretvalue(info)) or type(info) ~= "table" then
+        if not ok or Hidden(info) or type(info) ~= "table" then
             return false, 0
         end
         if not IsPoorQuality(info.quality) or Blocked(info.isLocked) or Blocked(info.hasNoValue) then
@@ -1162,8 +1594,8 @@ local function CheckJunkSlot(bag, slot)
     if not ok then
         return false, 0
     end
-    local iconHidden = issecretvalue and issecretvalue(icon)
-    local linkHidden = issecretvalue and issecretvalue(link)
+    local iconHidden = Hidden(icon)
+    local linkHidden = Hidden(link)
     if not iconHidden and not linkHidden and not icon and not link then
         return false, 0
     end
@@ -1184,14 +1616,7 @@ local function UseBagItem(bag, slot)
 end
 
 local function MerchantIsOpen()
-    if not (MerchantFrame and MerchantFrame.IsShown) then
-        return false
-    end
-    local ok, shown = pcall(MerchantFrame.IsShown, MerchantFrame)
-    if not ok or (issecretvalue and issecretvalue(shown)) then
-        return false
-    end
-    return shown and true or false
+    return FrameShown(MerchantFrame)
 end
 
 local function ShouldAutoLoot()
@@ -1201,7 +1626,7 @@ local function ShouldAutoLoot()
     -- Shift opens the loot window for this corpse.
     if IsModifiedClick then
         local ok, held = pcall(IsModifiedClick, "AUTOLOOTTOGGLE")
-        if ok and not (issecretvalue and issecretvalue(held)) and held then
+        if ok and not Hidden(held) and held then
             return false
         end
     end
@@ -1230,7 +1655,7 @@ local function FastLoot()
         local hasItem = true
         if LootSlotHasItem then
             local ok, has = pcall(LootSlotHasItem, i)
-            if ok and not (issecretvalue and issecretvalue(has)) then
+            if ok and not Hidden(has) then
                 hasItem = has and true or false
             end
         end
@@ -1265,7 +1690,7 @@ local function AutoRepair()
         return
     end
     local repairOk, canRepairMerchant = pcall(CanMerchantRepair)
-    if not repairOk or (issecretvalue and issecretvalue(canRepairMerchant)) or not canRepairMerchant then
+    if not repairOk or Hidden(canRepairMerchant) or not canRepairMerchant then
         return
     end
     if not GetRepairAllCost or not RepairAllItems then
@@ -1277,7 +1702,7 @@ local function AutoRepair()
     if not costOk then
         return
     end
-    if issecretvalue and issecretvalue(canRepair) then
+    if Hidden(canRepair) then
         canRepair = nil
     end
     cost = PlainNumber(cost)
@@ -1298,7 +1723,7 @@ local function AutoRepair()
     local paidGuild = false
     if mode == "guild" and CanGuildBankRepair then
         local guildOk, canGuild = pcall(CanGuildBankRepair)
-        if guildOk and not (issecretvalue and issecretvalue(canGuild)) and canGuild then
+        if guildOk and not Hidden(canGuild) and canGuild then
             if pcall(RepairAllItems, true) then
                 paidGuild = true
                 local againOk, again = pcall(GetRepairAllCost)
@@ -1345,10 +1770,10 @@ local function SellJunkAndRepair()
     local totalValue = 0
 
     local function SellBatch(pass)
-        if not MerchantIsOpen() or (InCombatLockdown and InCombatLockdown()) then
+        if not MerchantIsOpen() or (InFight()) then
             sellingJunk = false
             if totalSold > 0 then
-                QOL:Print(string.format("Sold %d junk item%s for %s.", totalSold, totalSold == 1 and "" or "s", CoinString(totalValue)))
+                QOL:Print(format("Sold %d junk item%s for %s.", totalSold, totalSold == 1 and "" or "s", CoinString(totalValue)))
             end
             return
         end
@@ -1392,7 +1817,7 @@ local function SellJunkAndRepair()
 
         sellingJunk = false
         if totalSold > 0 then
-            QOL:Print(string.format("Sold %d junk item%s for %s.", totalSold, totalSold == 1 and "" or "s", CoinString(totalValue)))
+            QOL:Print(format("Sold %d junk item%s for %s.", totalSold, totalSold == 1 and "" or "s", CoinString(totalValue)))
             if C_Timer and C_Timer.After then
                 C_Timer.After(0.15, AutoRepair)
             else
@@ -1406,29 +1831,15 @@ local function SellJunkAndRepair()
     SellBatch(1)
 end
 
-local function OtherShopOpen()
-    local frames = { BankFrame, GuildBankFrame, MailFrame }
-    for i = 1, 3 do
-        local frame = frames[i]
-        if frame and frame.IsShown then
-            local ok, shown = pcall(frame.IsShown, frame)
-            if ok and shown then
-                return true
-            end
-        end
-    end
-    return false
-end
-
 local function HandleMerchantVisit()
     merchantQueued = false
     if IsShiftKeyDown and IsShiftKeyDown() then
         return
     end
-    if OtherShopOpen() then
+    if ShopBlocked() then
         return
     end
-    if InCombatLockdown and InCombatLockdown() then
+    if InFight() then
         merchantQueued = true
         return
     end
@@ -1439,7 +1850,6 @@ local function HandleMerchantVisit()
     SellJunkAndRepair()
 end
 
-local events
 local merchantEvents = false
 local lootEvents = false
 
@@ -1450,11 +1860,11 @@ local function SyncMerchantEvents()
     end
     merchantEvents = want
     if want then
-        events:RegisterEvent("MERCHANT_SHOW")
-        events:RegisterEvent("MERCHANT_CLOSED")
+        pcall(qolEventFrame.RegisterEvent, qolEventFrame, "MERCHANT_SHOW")
+        pcall(qolEventFrame.RegisterEvent, qolEventFrame, "MERCHANT_CLOSED")
     else
-        events:UnregisterEvent("MERCHANT_SHOW")
-        events:UnregisterEvent("MERCHANT_CLOSED")
+        pcall(qolEventFrame.UnregisterEvent, qolEventFrame, "MERCHANT_SHOW")
+        pcall(qolEventFrame.UnregisterEvent, qolEventFrame, "MERCHANT_CLOSED")
     end
 end
 
@@ -1465,13 +1875,13 @@ local function SyncLootEvents()
     end
     lootEvents = want
     if want then
-        events:RegisterEvent("LOOT_READY")
-        events:RegisterEvent("LOOT_OPENED")
-        events:RegisterEvent("LOOT_CLOSED")
+        pcall(qolEventFrame.RegisterEvent, qolEventFrame, "LOOT_READY")
+        pcall(qolEventFrame.RegisterEvent, qolEventFrame, "LOOT_OPENED")
+        pcall(qolEventFrame.RegisterEvent, qolEventFrame, "LOOT_CLOSED")
     else
-        events:UnregisterEvent("LOOT_READY")
-        events:UnregisterEvent("LOOT_OPENED")
-        events:UnregisterEvent("LOOT_CLOSED")
+        pcall(qolEventFrame.UnregisterEvent, qolEventFrame, "LOOT_READY")
+        pcall(qolEventFrame.UnregisterEvent, qolEventFrame, "LOOT_OPENED")
+        pcall(qolEventFrame.UnregisterEvent, qolEventFrame, "LOOT_CLOSED")
     end
 end
 
@@ -1484,7 +1894,7 @@ function QOL:ApplyLootVendorSettings(key)
     local setCVar = (C_CVar and C_CVar.SetCVar) or SetCVar
     local getCVar = (C_CVar and C_CVar.GetCVar) or GetCVar
     if (key == nil or key == "fasterLoot") and setCVar then
-        if InCombatLockdown and InCombatLockdown() then
+        if InFight() then
             pendingCvarUpdate = true
             return
         end
@@ -1493,7 +1903,7 @@ function QOL:ApplyLootVendorSettings(key)
         local current
         if getCVar then
             local ok, val = pcall(getCVar, "autoLootDefault")
-            if ok and not (issecretvalue and issecretvalue(val)) then
+            if ok and not Hidden(val) then
                 current = val
             end
         end
@@ -1503,15 +1913,8 @@ function QOL:ApplyLootVendorSettings(key)
     end
 end
 
-events = CreateFrame("Frame")
-events:RegisterEvent("PLAYER_LOGIN")
-events:RegisterEvent("PLAYER_REGEN_ENABLED")
-events:SetScript("OnEvent", function(_, event)
-    if event == "PLAYER_LOGIN" then
-        if QOL.ApplyLootVendorSettings then
-            QOL:ApplyLootVendorSettings("fasterLoot")
-        end
-    elseif event == "LOOT_READY" or event == "LOOT_OPENED" then
+onLootVendorEvent = function(event)
+    if event == "LOOT_READY" or event == "LOOT_OPENED" then
         FastLoot()
     elseif event == "LOOT_CLOSED" then
         lastLootAt = 0
@@ -1533,7 +1936,7 @@ events:SetScript("OnEvent", function(_, event)
             HandleMerchantVisit()
         end
     end
-end)
+end
 
 SyncMerchantEvents()
 SyncLootEvents()
@@ -1585,31 +1988,6 @@ local function ServiceCategory(...)
     return nil
 end
 
-local function PlainNumber(v)
-    if Hidden(v) or type(v) ~= "number" then
-        return nil
-    end
-    return v
-end
-
-local function PlainString(v)
-    if Hidden(v) or type(v) ~= "string" or v == "" then
-        return nil
-    end
-    return v
-end
-
-local function FrameShown(frame)
-    if not frame or not frame.IsShown then
-        return false
-    end
-    local ok, shown = pcall(frame.IsShown, frame)
-    if not ok or (issecretvalue and issecretvalue(shown)) then
-        return false
-    end
-    return shown and true or false
-end
-
 local function ServiceCost(index)
     if not GetTrainerServiceCost then
         return nil
@@ -1649,7 +2027,7 @@ local function MeetsSkillReq(index)
         return true
     end
     local ok, skillName, _, hasReq = pcall(GetTrainerServiceSkillReq, index)
-    if not ok or (issecretvalue and (issecretvalue(skillName) or issecretvalue(hasReq))) then
+    if not ok or Hidden(skillName) or Hidden(hasReq) then
         return true
     end
     if not skillName then
@@ -1667,7 +2045,7 @@ local function MeetsAbilityReq(index)
     end
     for reqIndex = 1, 8 do
         local ok, abilityName, hasReq = pcall(GetTrainerServiceAbilityReq, index, reqIndex)
-        if not ok or (issecretvalue and (issecretvalue(abilityName) or issecretvalue(hasReq))) then
+        if not ok or Hidden(abilityName) or Hidden(hasReq) then
             break
         end
         if not abilityName then
@@ -1685,10 +2063,10 @@ local function ServiceSpellID(index)
         return nil
     end
     local ok, link = pcall(GetTrainerServiceItemLink, index)
-    if not ok or (issecretvalue and issecretvalue(link)) or type(link) ~= "string" then
+    if not ok or Hidden(link) or type(link) ~= "string" then
         return nil
     end
-    return tonumber(string.match(link, "spell:(%d+)"))
+    return tonumber(match(link, "spell:(%d+)"))
 end
 
 local function AlreadyKnown(index)
@@ -1698,19 +2076,19 @@ local function AlreadyKnown(index)
     end
     if IsPlayerSpell then
         local ok, known = pcall(IsPlayerSpell, spellID)
-        if ok and not (issecretvalue and issecretvalue(known)) and known then
+        if ok and not Hidden(known) and known then
             return true
         end
     end
     if C_SpellBook and C_SpellBook.IsSpellKnown then
         local ok, known = pcall(C_SpellBook.IsSpellKnown, spellID)
-        if ok and not (issecretvalue and issecretvalue(known)) and known then
+        if ok and not Hidden(known) and known then
             return true
         end
     end
     if IsSpellKnown then
         local ok, known = pcall(IsSpellKnown, spellID)
-        if ok and not (issecretvalue and issecretvalue(known)) and known then
+        if ok and not Hidden(known) and known then
             return true
         end
     end
@@ -1758,7 +2136,7 @@ local function ServiceKey(index)
     rank = PlainString(rank) or ""
     local req = ServiceLevelReq(index) or 0
     local cost = ServiceCost(index) or 0
-    return string.format("%s|%s|%d|%d", name, rank, req, cost)
+    return format("%s|%s|%d|%d", name, rank, req, cost)
 end
 
 local function NumTrainerServices()
@@ -1833,10 +2211,7 @@ end
 local function FinishTraining(total)
     training = false
     if total > 0 then
-        QOL:Print(string.format("Trained %d skill%s.", total, total == 1 and "" or "s"))
-        if QOL.QueueMaxRankScan then
-            QOL:QueueMaxRankScan("trainer")
-        end
+        QOL:Print(format("Trained %d skill%s.", total, total == 1 and "" or "s"))
     else
         local available = CountAvailable()
         if available > 0 then
@@ -1852,7 +2227,7 @@ local function TrainAll()
     if training then
         return
     end
-    if InCombatLockdown and InCombatLockdown() then
+    if InFight() then
         QOL:Print("Cannot train during combat.")
         return
     end
@@ -1868,7 +2243,7 @@ local function TrainAll()
 
     local function Step(pass)
         local parent = TrainerParent()
-        if not FrameShown(parent) or (InCombatLockdown and InCombatLockdown()) then
+        if not FrameShown(parent) or (InFight()) then
             FinishTraining(total)
             return
         end
@@ -1897,12 +2272,13 @@ local function TrainAll()
 end
 
 local trainPending = false
+local trainerParentHooked = {}
 
 local function PlaceButton(parent)
     if not trainBtn then
         return
     end
-    if InCombatLockdown and InCombatLockdown() then
+    if InFight() then
         trainPending = true
         return
     end
@@ -1921,6 +2297,12 @@ local function EnsureButton()
     local parent = TrainerParent()
     if not parent then
         return
+    end
+    if not trainerParentHooked[parent] and parent.HookScript then
+        trainerParentHooked[parent] = true
+        parent:HookScript("OnShow", function()
+            QOL:RefreshTrainAllButton()
+        end)
     end
     if trainBtn then
         PlaceButton(parent)
@@ -1943,8 +2325,24 @@ local function EnsureButton()
     PlaceButton(parent)
 end
 
+local trainerHot = false
+local trainerMoneyHot = false
+local TRAINER_HOT = { "TRAINER_SHOW", "TRAINER_UPDATE", "TRAINER_CLOSED" }
+
+local function SetTrainerMoneyWatch(want)
+    if want == trainerMoneyHot then
+        return
+    end
+    trainerMoneyHot = want
+    if want then
+        pcall(qolEventFrame.RegisterEvent, qolEventFrame, "PLAYER_MONEY")
+    else
+        pcall(qolEventFrame.UnregisterEvent, qolEventFrame, "PLAYER_MONEY")
+    end
+end
+
 function QOL:RefreshTrainAllButton()
-    if InCombatLockdown and InCombatLockdown() then
+    if InFight() then
         trainPending = true
         return
     end
@@ -1955,13 +2353,16 @@ function QOL:RefreshTrainAllButton()
     end
     if not OptionOn() then
         trainBtn:Hide()
+        SetTrainerMoneyWatch(false)
         return
     end
     local parent = TrainerParent()
     if not FrameShown(parent) then
         trainBtn:Hide()
+        SetTrainerMoneyWatch(false)
         return
     end
+    SetTrainerMoneyWatch(true)
     trainBtn:Show()
     if training then
         trainBtn:Disable()
@@ -1975,10 +2376,6 @@ function QOL:RefreshTrainAllButton()
     end
 end
 
-local events
-local trainerHot = false
-local TRAINER_HOT = { "TRAINER_SHOW", "TRAINER_UPDATE", "TRAINER_CLOSED", "PLAYER_MONEY" }
-
 local function SyncTrainerEvents()
     local want = OptionOn()
     if want == trainerHot then
@@ -1987,10 +2384,13 @@ local function SyncTrainerEvents()
     trainerHot = want
     for i = 1, #TRAINER_HOT do
         if want then
-            pcall(events.RegisterEvent, events, TRAINER_HOT[i])
+            pcall(qolEventFrame.RegisterEvent, qolEventFrame, TRAINER_HOT[i])
         else
-            pcall(events.UnregisterEvent, events, TRAINER_HOT[i])
+            pcall(qolEventFrame.UnregisterEvent, qolEventFrame, TRAINER_HOT[i])
         end
+    end
+    if not want then
+        SetTrainerMoneyWatch(false)
     end
 end
 
@@ -1999,19 +2399,12 @@ function QOL:ApplyTrainAllSettings()
     self:RefreshTrainAllButton()
 end
 
-events = CreateFrame("Frame")
-events:RegisterEvent("PLAYER_LOGIN")
-events:RegisterEvent("ADDON_LOADED")
-events:RegisterEvent("PLAYER_REGEN_ENABLED")
-events:SetScript("OnEvent", function(_, event, name)
+onTrainerEvent = function(event, name)
     if event == "ADDON_LOADED" then
         if name == "Blizzard_TrainerUI" then
             EnsureButton()
             QOL:RefreshTrainAllButton()
         end
-    elseif event == "PLAYER_LOGIN" then
-        EnsureButton()
-        QOL:RefreshTrainAllButton()
     elseif event == "TRAINER_SHOW" then
         EnsureButton()
         QOL:RefreshTrainAllButton()
@@ -2021,7 +2414,8 @@ events:SetScript("OnEvent", function(_, event, name)
         end
     elseif event == "TRAINER_CLOSED" then
         training = false
-        if InCombatLockdown and InCombatLockdown() then
+        SetTrainerMoneyWatch(false)
+        if InFight() then
             trainPending = true
         elseif trainBtn then
             trainBtn:Hide()
@@ -2029,582 +2423,342 @@ events:SetScript("OnEvent", function(_, event, name)
     elseif event == "PLAYER_REGEN_ENABLED" and trainPending then
         QOL:RefreshTrainAllButton()
     end
-end)
+end
 
 SyncTrainerEvents()
 
 end
 
--- Max-rank action bar spells.
+-- Persistent Default Group Role.
 do
 
-local MAX_ACTION_SLOTS = 180
-local loginScanned = false
-local trainerOpen = false
-local waitingLevelSpells = false
-local scanQueued = false
-local scanToken = 0
+local VALID_ROLES = {
+    NONE = true,
+    TANK = true,
+    HEALER = true,
+    DAMAGER = true,
+}
 
-local function OptionOn()
-    local db = QOL:GetDB()
-    return db and db.maxRankActionBars and true or false
-end
+local ROLE_EVENTS = {
+    "GROUP_JOINED",
+    "ROLE_CHANGED_INFORM",
+    "ACTIVE_TALENT_GROUP_CHANGED",
+    "PLAYER_SPECIALIZATION_CHANGED",
+}
 
-local function PlainString(v)
-    if Hidden(v) or type(v) ~= "string" or v == "" then
-        return nil
-    end
-    return v
-end
+local roleEventsOn = false
+local rolePending = false
+local roleTimerPending = false
+local applyingDefaultRole = false
+local manualOverride = false
+local wasInGroup = false
+local retryCount = 0
+local retryWindowAt = 0
+local roleHooked = false
 
-local function PlainNumber(v)
-    if Hidden(v) or type(v) ~= "number" then
-        return nil
-    end
-    return v
-end
-
-local function SpellBookBank()
-    if Enum and Enum.SpellBookSpellBank and Enum.SpellBookSpellBank.Player then
-        return Enum.SpellBookSpellBank.Player
-    end
-    return BOOKTYPE_SPELL or "spell"
-end
-
-local function RankNumber(rankText)
-    rankText = PlainString(rankText)
-    if not rankText then
-        return 0, false
-    end
-    local num = tonumber(string.match(rankText, "(%d+)"))
-    if num then
-        return num, false
-    end
-    -- Non-empty subtext without digits (e.g. "Turtle", "Cat", "Bear", "Passive") is a variant, not a numbered rank.
-    return 0, true
-end
-
-local function SpellNameAndRank(spellID)
-    spellID = PlainNumber(spellID)
-    if not spellID then
-        return nil, 0, false
-    end
-    if C_Spell and C_Spell.GetSpellName then
-        local okName, name = pcall(C_Spell.GetSpellName, spellID)
-        local sub
-        if C_Spell.GetSpellSubtext then
-            local okSub, subtext = pcall(C_Spell.GetSpellSubtext, spellID)
-            if okSub then
-                sub = subtext
-            end
-        end
-        if not PlainString(sub) and GetSpellSubtext then
-            local okSub, subtext = pcall(GetSpellSubtext, spellID)
-            if okSub then
-                sub = subtext
-            end
-        end
-        if okName then
-            local rank, isVariant = RankNumber(sub)
-            return PlainString(name), rank, isVariant
-        end
-    end
-    if C_Spell and C_Spell.GetSpellInfo then
-        local ok, spellInfo = pcall(C_Spell.GetSpellInfo, spellID)
-        if ok and not (issecretvalue and issecretvalue(spellInfo)) and type(spellInfo) == "table" then
-            local rank, isVariant = RankNumber(spellInfo.subtext)
-            return PlainString(spellInfo.name), rank, isVariant
-        end
-    end
-    if GetSpellInfo then
-        local ok, name, rankText = pcall(GetSpellInfo, spellID)
-        if ok then
-            local rank, isVariant = RankNumber(rankText)
-            return PlainString(name), rank, isVariant
-        end
-    end
-    return nil, 0, false
-end
-
-local function SpellIsKnown(spellID)
-    spellID = PlainNumber(spellID)
-    if not spellID then
-        return false
-    end
-    if IsPlayerSpell then
-        local ok, known = pcall(IsPlayerSpell, spellID)
-        if ok and not (issecretvalue and issecretvalue(known)) and known then
-            return true
-        end
-    end
-    if C_SpellBook and C_SpellBook.IsSpellKnown then
-        local ok, known = pcall(C_SpellBook.IsSpellKnown, spellID)
-        if ok and not (issecretvalue and issecretvalue(known)) and known then
-            return true
-        end
-    end
-    if IsSpellKnown then
-        local ok, known = pcall(IsSpellKnown, spellID)
-        if ok and not (issecretvalue and issecretvalue(known)) and known then
-            return true
-        end
-    end
-    if IsPlayerSpell or IsSpellKnown or (C_SpellBook and C_SpellBook.IsSpellKnown) then
-        return false
-    end
-    return true
-end
-
-local function IsLearnedSpell(itemType)
-    if issecretvalue and issecretvalue(itemType) then
-        return false
-    end
-    if itemType == nil then
+local function IsForeverRealm(realm)
+    if type(realm) == "string" and find(realm, "^CAMWOW") ~= nil then
         return true
     end
-    if itemType == "SPELL" or itemType == "spell" then
+    if WOW_PROJECT_ID == 16001 then
         return true
-    end
-    local types = Enum and Enum.SpellBookItemType
-    return types and itemType == types.Spell or false
-end
-
-local function IsLowRank(index, book)
-    if not (C_SpellBook and C_SpellBook.IsSpellBookItemLowRank) then
-        return false
-    end
-    local ok, low = pcall(C_SpellBook.IsSpellBookItemLowRank, index, book)
-    if not ok or (issecretvalue and issecretvalue(low)) then
-        return false
-    end
-    return low and true or false
-end
-
-local function IsPassiveSlot(index, book, spellID, infoPassive)
-    if infoPassive ~= nil then
-        if issecretvalue and issecretvalue(infoPassive) then
-            return true
-        end
-        if infoPassive then
-            return true
-        end
-    end
-    if C_SpellBook and C_SpellBook.IsSpellBookItemPassive then
-        local ok, passive = pcall(C_SpellBook.IsSpellBookItemPassive, index, book)
-        if ok and not (issecretvalue and issecretvalue(passive)) and passive then
-            return true
-        end
-    end
-    if spellID and C_Spell and C_Spell.IsSpellPassive then
-        local ok, passive = pcall(C_Spell.IsSpellPassive, spellID)
-        if ok and not (issecretvalue and issecretvalue(passive)) and passive then
-            return true
-        end
-    end
-    if IsPassiveSpell then
-        local ok, passive = pcall(IsPassiveSpell, index, book)
-        if ok and not (issecretvalue and issecretvalue(passive)) and passive then
-            return true
-        end
     end
     return false
 end
 
-local function IsOffSpecSlot(index, book, infoOffSpec)
-    if infoOffSpec ~= nil then
-        if issecretvalue and issecretvalue(infoOffSpec) then
-            return true
-        end
-        if infoOffSpec then
-            return true
-        end
-    end
-    if not (C_SpellBook and C_SpellBook.IsSpellBookItemOffSpec) then
-        return false
-    end
-    local ok, off = pcall(C_SpellBook.IsSpellBookItemOffSpec, index, book)
-    if not ok or (issecretvalue and issecretvalue(off)) then
-        return false
-    end
-    return off and true or false
-end
-
-local function ActionSpellIsLowRank(spellID)
-    if not (C_SpellBook and C_SpellBook.FindSpellBookSlotForSpell and C_SpellBook.IsSpellBookItemLowRank) then
-        return false
-    end
-    local ok, slot, bank = pcall(C_SpellBook.FindSpellBookSlotForSpell, spellID)
-    if not ok or not slot then
-        return false
-    end
-    local okRank, low = pcall(C_SpellBook.IsSpellBookItemLowRank, slot, bank)
-    if not okRank or (issecretvalue and issecretvalue(low)) then
-        return false
-    end
-    return low and true or false
-end
-
-local function PickupBookSpell(index, book)
-    if C_SpellBook and C_SpellBook.PickupSpellBookItem then
-        C_SpellBook.PickupSpellBookItem(index, book)
-        return
-    end
-    if PickupSpellBookItem then
-        PickupSpellBookItem(index, book)
-        return
-    end
-    local spellID
-    if C_SpellBook and C_SpellBook.GetSpellBookItemInfo then
-        local ok, info = pcall(C_SpellBook.GetSpellBookItemInfo, index, book)
-        if ok and type(info) == "table" then
-            spellID = info.spellID
-        end
-    elseif GetSpellBookItemInfo then
-        local ok, _, id = pcall(GetSpellBookItemInfo, index, book)
+local function PlayerRoleKey()
+    local name
+    if UnitName then
+        local ok, n = pcall(UnitName, "player")
         if ok then
-            spellID = id
+            name = PlainString(n)
         end
     end
-    spellID = PlainNumber(spellID)
-    if spellID and C_Spell and C_Spell.PickupSpell then
-        C_Spell.PickupSpell(spellID)
-    elseif spellID and PickupSpell then
-        PickupSpell(spellID)
+    if not name or name == "Unknown" then
+        return nil
     end
-end
-
-local function CursorBusy()
-    if not GetCursorInfo then
-        return false
-    end
-    local ok, cursor = pcall(GetCursorInfo)
-    if not ok or (issecretvalue and issecretvalue(cursor)) or cursor == nil then
-        return false
-    end
-    return true
-end
-
-local function RememberLine(list, seen, index)
-    index = PlainNumber(index)
-    if not index or index < 1 or seen[index] then
-        return
-    end
-    seen[index] = true
-    list[#list + 1] = index
-end
-
-local function SkillLineIndices()
-    local list, seen = {}, {}
-    local count = 0
-    if C_SpellBook and C_SpellBook.GetNumSpellBookSkillLines then
-        local ok, num = pcall(C_SpellBook.GetNumSpellBookSkillLines)
-        count = (ok and PlainNumber(num)) or 0
-    end
-    if GetNumSpellTabs then
-        local ok, tabs = pcall(GetNumSpellTabs)
-        tabs = (ok and PlainNumber(tabs)) or 0
-        if tabs > count then
-            count = tabs
-        end
-    end
-    if count > 64 then
-        count = 64
-    end
-    for i = 1, count do
-        RememberLine(list, seen, i)
-    end
-    if GetProfessions then
-        local ok, first, second, archaeology, fishing, cooking = pcall(GetProfessions)
+    local realm
+    if GetRealmName then
+        local ok, r = pcall(GetRealmName)
         if ok then
-            RememberLine(list, seen, first)
-            RememberLine(list, seen, second)
-            RememberLine(list, seen, archaeology)
-            RememberLine(list, seen, fishing)
-            RememberLine(list, seen, cooking)
+            realm = PlainString(r)
         end
     end
-    return list
-end
-
-local function LineBounds(tab)
-    if C_SpellBook and C_SpellBook.GetSpellBookSkillLineInfo then
-        local ok, info = pcall(C_SpellBook.GetSpellBookSkillLineInfo, tab)
-        if ok and not (issecretvalue and issecretvalue(info)) and type(info) == "table" then
-            local offSpec = PlainNumber(info.offSpecID)
-            local hidden = Hidden(info.isOffSpec) or Hidden(info.isGuild) or info.isOffSpec or info.isGuild or (offSpec and offSpec ~= 0)
-            return PlainNumber(info.itemIndexOffset) or 0, PlainNumber(info.numSpellBookItems) or 0, hidden and true or false
+    local guid
+    if UnitGUID then
+        local ok, g = pcall(UnitGUID, "player")
+        if ok then
+            guid = PlainString(g)
         end
     end
-    if GetSpellTabInfo then
-        local okTab, _, _, offset, numSlots, isGuild, offSpecID = pcall(GetSpellTabInfo, tab)
-        if okTab then
-            local offSpec = PlainNumber(offSpecID)
-            local hidden = Hidden(isGuild) or isGuild or (offSpec and offSpec ~= 0)
-            return PlainNumber(offset) or 0, PlainNumber(numSlots) or 0, hidden and true or false
+    if IsForeverRealm(realm) then
+        return guid or name
+    end
+    if realm then
+        return name .. "-" .. realm
+    end
+    return guid or name
+end
+
+local function InGroupNow()
+    if IsInGroup then
+        local ok, grouped = pcall(IsInGroup)
+        if ok and not Hidden(grouped) then
+            return grouped and true or false
         end
     end
-    return nil, nil, true
-end
-
-local function BuildMaxRankMap()
-    local map = {}
-    local knownByID = {}
-    local book = SpellBookBank()
-    local lines = SkillLineIndices()
-
-    for t = 1, #lines do
-        local offset, numSlots, skip = LineBounds(lines[t])
-        if not skip and offset and numSlots and numSlots > 0 then
-            for i = offset + 1, offset + numSlots do
-                local name, rankText, spellID, itemType, infoPassive, infoOffSpec
-                if C_SpellBook and C_SpellBook.GetSpellBookItemInfo then
-                    local ok, info = pcall(C_SpellBook.GetSpellBookItemInfo, i, book)
-                    if ok and not (issecretvalue and issecretvalue(info)) and type(info) == "table" then
-                        spellID = info.spellID
-                        itemType = info.itemType
-                        name = info.name
-                        rankText = info.subName
-                        infoPassive = info.isPassive
-                        infoOffSpec = info.isOffSpec
-                    end
-                elseif GetSpellBookItemInfo then
-                    local ok, iType, id = pcall(GetSpellBookItemInfo, i, book)
-                    if ok then
-                        itemType, spellID = iType, id
-                    end
-                end
-                if not name or not rankText then
-                    if C_SpellBook and C_SpellBook.GetSpellBookItemName then
-                        local ok, bookName, bookRank = pcall(C_SpellBook.GetSpellBookItemName, i, book)
-                        if ok then
-                            name = name or bookName
-                            rankText = rankText or bookRank
-                        end
-                    elseif GetSpellBookItemName then
-                        local ok, bookName, bookRank = pcall(GetSpellBookItemName, i, book)
-                        if ok then
-                            name = name or bookName
-                            rankText = rankText or bookRank
-                        end
-                    end
-                end
-                name = PlainString(name)
-                spellID = PlainNumber(spellID)
-                if name and spellID and IsLearnedSpell(itemType) and not IsOffSpecSlot(i, book, infoOffSpec) and not IsPassiveSlot(i, book, spellID, infoPassive) then
-                    local rank, isVariant = RankNumber(rankText)
-                    local low = IsLowRank(i, book)
-                    if not isVariant and SpellIsKnown(spellID) then
-                        knownByID[spellID] = {
-                            name = name,
-                            rank = rank,
-                            lowRank = low,
-                            index = i,
-                        }
-                        if not low then
-                            local current = map[name]
-                            if not current or rank > current.rank or (rank == current.rank and i > current.index) then
-                                map[name] = {
-                                    rank = rank,
-                                    index = i,
-                                    spellID = spellID,
-                                }
-                            end
-                        end
-                    end
-                end
-            end
-        end
-    end
-    return map, knownByID
-end
-
-local function Flag(ok, value)
-    if not ok or (issecretvalue and issecretvalue(value)) then
-        return false
-    end
-    return value and true or false
-end
-
-local function SlotHasAction(slot)
-    if C_ActionBar and C_ActionBar.HasAction then
-        return Flag(pcall(C_ActionBar.HasAction, slot))
-    end
-    if HasAction then
-        return Flag(pcall(HasAction, slot))
+    if GetNumGroupMembers then
+        local ok, count = pcall(GetNumGroupMembers)
+        local n = ok and PlainNumber(count) or 0
+        return n > 0
     end
     return false
 end
 
-local function AssistedSlot(slot)
-    if not (C_ActionBar and C_ActionBar.IsAssistedCombatAction) then
-        return false
+local function AssignedPlayerRole()
+    if not UnitGroupRolesAssigned then
+        return nil
     end
-    return Flag(pcall(C_ActionBar.IsAssistedCombatAction, slot))
+    local ok, assigned = pcall(UnitGroupRolesAssigned, "player")
+    if not ok then
+        return nil
+    end
+    return PlainString(assigned)
 end
 
-local function UpgradeActionBars()
-    if not OptionOn() then
-        scanQueued = false
-        return
+function QOL:GetDefaultGroupRole()
+    if type(XiusUICharDB) == "table" and VALID_ROLES[XiusUICharDB.defaultGroupRole] then
+        return XiusUICharDB.defaultGroupRole
     end
-    if InCombatLockdown and InCombatLockdown() then
-        scanQueued = true
-        return
-    end
-    if CursorBusy() then
-        scanQueued = true
-        if C_Timer and C_Timer.After then
-            C_Timer.After(0.75, function()
-                if scanQueued then
-                    QOL:QueueMaxRankScan("retry")
-                end
-            end)
+    local key = PlayerRoleKey()
+    if key then
+        local core = XiusUI.CoreDB and XiusUI:CoreDB() or XiusCoreDB
+        local saved = type(core) == "table" and type(core.charRoles) == "table" and core.charRoles[key] or nil
+        if not VALID_ROLES[saved] and type(XiusUIDB) == "table" and type(XiusUIDB.charRoles) == "table" then
+            saved = XiusUIDB.charRoles[key]
         end
+        if VALID_ROLES[saved] then
+            if type(XiusUICharDB) == "table" then
+                XiusUICharDB.defaultGroupRole = saved
+            end
+            return saved
+        end
+    end
+    return "NONE"
+end
+
+local function InstallRoleHook()
+    if roleHooked or type(UnitSetRole) ~= "function" or type(hooksecurefunc) ~= "function" then
         return
     end
-    if not GetActionInfo or not PlaceAction then
+    roleHooked = true
+    hooksecurefunc("UnitSetRole", function(unit, newRole)
+        if applyingDefaultRole then
+            return
+        end
+        if Hidden(unit) or Hidden(newRole) or type(unit) ~= "string" or type(newRole) ~= "string" then
+            return
+        end
+        local isPlayer = (unit == "player")
+        if not isPlayer and UnitIsUnit then
+            local ok, same = pcall(UnitIsUnit, unit, "player")
+            if ok and not Hidden(same) and same then
+                isPlayer = true
+            end
+        end
+        if not isPlayer then
+            return
+        end
+        local configured = QOL:GetDefaultGroupRole()
+        if configured ~= "NONE" and VALID_ROLES[newRole] and newRole ~= configured then
+            manualOverride = true
+            rolePending = false
+        end
+    end)
+end
+
+local function ApplyDefaultRole(force)
+    local role = QOL:GetDefaultGroupRole()
+    if role == "NONE" or type(UnitSetRole) ~= "function" then
+        rolePending = false
         return
     end
+    if manualOverride and not force then
+        return
+    end
+    if not InGroupNow() then
+        rolePending = false
+        return
+    end
+    if InFight() then
+        rolePending = true
+        return
+    end
+    rolePending = false
+    if AssignedPlayerRole() == role then
+        retryCount = 0
+        return
+    end
+    local now = GetTime and GetTime() or 0
+    if (now - retryWindowAt) > 5 then
+        retryWindowAt = now
+        retryCount = 0
+    end
+    if not force and retryCount >= 3 then
+        return
+    end
+    retryCount = retryCount + 1
+    applyingDefaultRole = true
+    pcall(UnitSetRole, "player", role)
+    applyingDefaultRole = false
+end
 
-    local maxMap, knownByID = BuildMaxRankMap()
-    local upgraded = 0
-    local book = SpellBookBank()
+local function QueueApplyRole(delay, force)
+    if QOL:GetDefaultGroupRole() == "NONE" then
+        return
+    end
+    if manualOverride and not force then
+        return
+    end
+    if force then
+        manualOverride = false
+        retryCount = 0
+    end
+    if not (C_Timer and C_Timer.After) then
+        ApplyDefaultRole(force)
+        return
+    end
+    if roleTimerPending and not force then
+        return
+    end
+    roleTimerPending = true
+    C_Timer.After(delay or 0.2, function()
+        roleTimerPending = false
+        ApplyDefaultRole(force)
+    end)
+end
 
-    for slot = 1, MAX_ACTION_SLOTS do
-        if SlotHasAction(slot) and not AssistedSlot(slot) then
-            local ok, actionType, id = pcall(GetActionInfo, slot)
-            id = ok and PlainNumber(id) or nil
-            if ok and PlainString(actionType) == "spell" and id then
-                local entry = knownByID[id]
-                local name, rank, isVariant, lowRank
-                if entry then
-                    name = entry.name
-                    rank = entry.rank
-                    lowRank = entry.lowRank
-                else
-                    name, rank, isVariant = SpellNameAndRank(id)
-                end
-                if not isVariant and name then
-                    local best = maxMap[name]
-                    if best and best.index and best.spellID and best.spellID ~= id then
-                        if lowRank == nil then
-                            lowRank = ActionSpellIsLowRank(id)
-                        end
-                        if (rank > 0 and best.rank > rank) or lowRank then
-                            if CursorBusy() then
-                                pcall(ClearCursor)
-                            end
-                            pcall(PickupBookSpell, best.index, book)
-                            if CursorBusy() then
-                                local placed = pcall(PlaceAction, slot)
-                                if CursorBusy() then
-                                    pcall(ClearCursor)
-                                end
-                                local okAfter, newType, newID = pcall(GetActionInfo, slot)
-                                newID = okAfter and PlainNumber(newID) or nil
-                                if placed and PlainString(newType) == "spell" and newID and newID ~= id then
-                                    upgraded = upgraded + 1
-                                end
-                            end
-                        end
-                    end
-                end
+local function SyncRoleEvents()
+    local want = QOL:GetDefaultGroupRole() ~= "NONE"
+    if want then
+        InstallRoleHook()
+    end
+    if want ~= roleEventsOn then
+        roleEventsOn = want
+        for i = 1, #ROLE_EVENTS do
+            if want then
+                pcall(qolEventFrame.RegisterEvent, qolEventFrame, ROLE_EVENTS[i])
+            else
+                pcall(qolEventFrame.UnregisterEvent, qolEventFrame, ROLE_EVENTS[i])
             end
         end
     end
-
-    scanQueued = false
-    if upgraded > 0 and QOL.Print then
-        QOL:Print(string.format("Upgraded %d action bar spell%s to max rank.", upgraded, upgraded == 1 and "" or "s"))
+    if QOL.SyncEvents then
+        QOL:SyncEvents()
     end
 end
 
-function QOL:QueueMaxRankScan(reason)
-    if not OptionOn() then
-        return
+function QOL:SetDefaultGroupRole(role)
+    if not VALID_ROLES[role] then
+        role = "NONE"
     end
-    scanQueued = true
-    scanToken = scanToken + 1
-    local token = scanToken
-    local delay = 0.4
-    if reason == "login" then
-        delay = 1.5
-    elseif reason == "level" then
-        delay = 1.0
-    elseif reason == "trainer" then
-        delay = 0.5
+    if type(XiusUICharDB) ~= "table" then
+        XiusUICharDB = {}
     end
-    if C_Timer and C_Timer.After then
-        C_Timer.After(delay, function()
-            if token ~= scanToken then
-                return
+    XiusUICharDB.defaultGroupRole = role
+    local key = PlayerRoleKey()
+    if key then
+        local core = XiusUI.CoreDB and XiusUI:CoreDB() or XiusCoreDB
+        if type(core) == "table" then
+            if type(core.charRoles) ~= "table" then
+                core.charRoles = {}
             end
-            UpgradeActionBars()
-        end)
+            core.charRoles[key] = role
+        end
+        if type(XiusUIDB) == "table" then
+            if type(XiusUIDB.charRoles) ~= "table" then
+                XiusUIDB.charRoles = {}
+            end
+            XiusUIDB.charRoles[key] = role
+        end
+    end
+    manualOverride = false
+    retryCount = 0
+    SyncRoleEvents()
+    if role ~= "NONE" then
+        ApplyDefaultRole(true)
     else
-        UpgradeActionBars()
+        rolePending = false
     end
 end
 
-local events
-local rankHot = false
-local RANK_HOT = { "PLAYER_LEVEL_UP", "SPELLS_CHANGED", "TRAINER_SHOW", "TRAINER_CLOSED" }
+function QOL:ApplyRoleSettings()
+    SyncRoleEvents()
+    if self:GetDefaultGroupRole() ~= "NONE" then
+        ApplyDefaultRole(false)
+    end
+end
 
-local function SyncMaxRankEvents()
-    local want = OptionOn()
-    if want == rankHot then
+onRoleEvent = function(event, first, _, _, fourth)
+    if QOL:GetDefaultGroupRole() == "NONE" then
         return
     end
-    rankHot = want
-    for i = 1, #RANK_HOT do
-        if want then
-            pcall(events.RegisterEvent, events, RANK_HOT[i])
-        else
-            pcall(events.UnregisterEvent, events, RANK_HOT[i])
+    if event == "PLAYER_ENTERING_WORLD" then
+        wasInGroup = InGroupNow()
+        retryCount = 0
+        if wasInGroup then
+            QueueApplyRole(0.2, false)
         end
+    elseif event == "GROUP_JOINED" then
+        wasInGroup = true
+        manualOverride = false
+        retryCount = 0
+        QueueApplyRole(0.2, false)
+    elseif event == "GROUP_ROSTER_UPDATE" then
+        local grouped = InGroupNow()
+        if not grouped then
+            wasInGroup = false
+            manualOverride = false
+            rolePending = false
+            retryCount = 0
+        elseif not wasInGroup then
+            wasInGroup = true
+            manualOverride = false
+            retryCount = 0
+            QueueApplyRole(0.2, false)
+        elseif not manualOverride and AssignedPlayerRole() ~= QOL:GetDefaultGroupRole() then
+            QueueApplyRole(0.2, false)
+        end
+    elseif event == "ROLE_CHANGED_INFORM" then
+        if manualOverride then
+            return
+        end
+        local playerName
+        if UnitName then
+            local ok, value = pcall(UnitName, "player")
+            if ok then
+                playerName = PlainString(value)
+            end
+        end
+        if not playerName or Hidden(first) or not SamePerson(first, playerName) then
+            return
+        end
+        local newRole = PlainString(fourth)
+        local targetRole = QOL:GetDefaultGroupRole()
+        if newRole ~= targetRole and (newRole == "DAMAGER" or newRole == "NONE" or newRole == nil) then
+            QueueApplyRole(0.2, false)
+        end
+    elseif event == "ACTIVE_TALENT_GROUP_CHANGED" then
+        QueueApplyRole(0.2, true)
+    elseif event == "PLAYER_SPECIALIZATION_CHANGED" then
+        if first == nil or (not Hidden(first) and first == "player") then
+            QueueApplyRole(0.2, true)
+        end
+    elseif event == "PLAYER_REGEN_ENABLED" and rolePending then
+        ApplyDefaultRole(false)
     end
 end
 
-function QOL:ApplyMaxRankSettings(key)
-    SyncMaxRankEvents()
-    if key == "maxRankActionBars" and OptionOn() then
-        self:QueueMaxRankScan("settings")
-    end
-end
-
-events = CreateFrame("Frame")
-events:RegisterEvent("PLAYER_LOGIN")
-events:RegisterEvent("PLAYER_REGEN_ENABLED")
-events:SetScript("OnEvent", function(_, event)
-    if event == "PLAYER_LOGIN" then
-        if not loginScanned and (QOL:GetDB()) then
-            loginScanned = true
-            QOL:QueueMaxRankScan("login")
-        end
-    elseif event == "PLAYER_LEVEL_UP" then
-        waitingLevelSpells = true
-        QOL:QueueMaxRankScan("level")
-    elseif event == "TRAINER_SHOW" then
-        trainerOpen = true
-    elseif event == "TRAINER_CLOSED" then
-        if trainerOpen then
-            QOL:QueueMaxRankScan("trainer")
-        end
-        trainerOpen = false
-    elseif event == "SPELLS_CHANGED" then
-        if waitingLevelSpells then
-            waitingLevelSpells = false
-            QOL:QueueMaxRankScan("level")
-        elseif trainerOpen then
-            QOL:QueueMaxRankScan("trainer")
-        end
-    elseif event == "PLAYER_REGEN_ENABLED" then
-        if scanQueued then
-            QOL:QueueMaxRankScan("retry")
-        end
-    end
-end)
-
-SyncMaxRankEvents()
+SyncRoleEvents()
 
 end

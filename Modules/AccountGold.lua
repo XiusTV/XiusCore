@@ -1,11 +1,13 @@
+local addonName, ns = ...
+
 --[[
     Account Gold
-    Remembers each character's gold and shows the account breakdown when you
-    hover the bag coins. The bag's own money display is not changed.
+    Remembers each character's gold in the account-wide XiusUIDB.accountGold.characters
+    root table and shows the account breakdown when hovering bag coins.
 ]]
 
 local AG = {}
-AG.VERSION = "1.0.0"
+AG.VERSION = "1.2.0"
 
 local pairs = pairs
 local type = type
@@ -16,7 +18,9 @@ local pcall = pcall
 local floor = math.floor
 local format = string.format
 local find = string.find
+local gsub = string.gsub
 local lower = string.lower
+local upper = string.upper
 local concat = table.concat
 local sort = table.sort
 local time = time
@@ -32,27 +36,269 @@ local MUTED_R, MUTED_G, MUTED_B = 110 / 255, 115 / 255, 128 / 255
 local hooked = {}
 local dirty = false
 local waiting = false
+local retryCount = 0
+local retryQueued = false
 local divider
 
-local function Core()
-    if XiusUI.CoreDB then
-        return XiusUI:CoreDB()
-    end
-    if type(XiusCoreDB) ~= "table" then
-        XiusCoreDB = {}
-    end
-    return XiusCoreDB
+local SETTINGS_KEYS = {
+    enabled = true,
+    showAllRealms = true,
+    hideZero = true,
+    characters = true,
+}
+
+local function Hidden(value)
+    return XiusUI.Hidden and XiusUI:Hidden(value)
 end
 
-function AG:GetDB()
-    local core = Core()
-    if type(core.accountGold) ~= "table" then
-        core.accountGold = {}
+local function ReadableString(value)
+    if Hidden(value) or type(value) ~= "string" or value == "" then
+        return nil
     end
-    local db = core.accountGold
+    return value
+end
+
+local function ReadableNumber(value)
+    if Hidden(value) or type(value) ~= "number" then
+        return nil
+    end
+    return value
+end
+
+local function IsCamwowShard(realm)
+    return type(realm) == "string" and find(upper(realm), "^CAMWOW") ~= nil
+end
+
+local function IsForeverClient(realm)
+    if IsCamwowShard(realm) then
+        return true
+    end
+    if WOW_PROJECT_ID == 16001 then
+        return true
+    end
+    if GetBuildInfo then
+        local ok, _, _, _, tocVersion = pcall(GetBuildInfo)
+        if ok and tonumber(tocVersion) == 16001 then
+            return true
+        end
+    end
+    if GetRealmName then
+        local ok, currentRealm = pcall(GetRealmName)
+        if ok and IsCamwowShard(currentRealm) then
+            return true
+        end
+    end
+    return false
+end
+
+-- Strips WoW Forever shard suffixes (e.g. "CAMWOW US2 Realm 15 PvE", "Realm - 15", "#15")
+-- and normalizes to a stable lowercase alphanumeric base realm identifier.
+local function NormalizeBaseRealm(realm)
+    if type(realm) ~= "string" or realm == "" then
+        return ""
+    end
+    local s = lower(realm)
+    s = gsub(s, "%s+realm%s*%d+", "")
+    s = gsub(s, "%s*%-%s*%d+$", "")
+    s = gsub(s, "%s*#%d+$", "")
+    s = gsub(s, "[%s%-']", "")
+    if s == "" then
+        s = lower(gsub(realm, "[%s%-']", ""))
+    end
+    return s
+end
+
+local function IsValidCharName(name)
+    return type(name) == "string" and name ~= "" and name ~= "Unknown" and name ~= UNKNOWNOBJECT
+end
+
+local function SafeClassToken(raw)
+    if type(raw) ~= "string" or raw == "" then
+        return ""
+    end
+    return upper(raw)
+end
+
+local function SafeMoney(entry)
+    local m = tonumber(entry.money)
+    if m == nil then
+        m = tonumber(entry.gold)
+    end
+    if m == nil then
+        m = tonumber(entry.copper)
+    end
+    m = m or 0
+    if m < 0 then
+        m = 0
+    end
+    return floor(m + 0.5)
+end
+
+local function SafeUpdated(entry)
+    return tonumber(entry.updated) or tonumber(entry.lastSeen) or tonumber(entry.lastUpdated) or 0
+end
+
+local function MakeCharKey(name, normBaseRealm)
+    if normBaseRealm and normBaseRealm ~= "" then
+        return name .. "-" .. normBaseRealm
+    end
+    return name
+end
+
+local function MergeCharEntry(chars, candidate, fallbackRealm)
+    if type(chars) ~= "table" or type(candidate) ~= "table" then
+        return
+    end
+    if not IsValidCharName(candidate.name) then
+        return
+    end
+    local realm = (type(candidate.realm) == "string" and candidate.realm ~= "") and candidate.realm
+        or (type(fallbackRealm) == "string" and fallbackRealm or "")
+    local normRealm = NormalizeBaseRealm(
+        (type(candidate.normalizedRealm) == "string" and candidate.normalizedRealm ~= "") and candidate.normalizedRealm or realm
+    )
+    local key = MakeCharKey(candidate.name, normRealm)
+    local candUpdated = SafeUpdated(candidate)
+    local candMoney = SafeMoney(candidate)
+    local existing = chars[key]
+    if type(existing) == "table" then
+        local exUpdated = SafeUpdated(existing)
+        if exUpdated > candUpdated then
+            return
+        end
+        if exUpdated == candUpdated and SafeMoney(existing) > candMoney then
+            return
+        end
+    end
+    local cls = SafeClassToken(candidate.class or candidate.classFile)
+    if cls == "" and type(existing) == "table" then
+        cls = SafeClassToken(existing.class)
+    end
+    local faction = type(candidate.faction) == "string" and candidate.faction or ""
+    if faction == "" and type(existing) == "table" and type(existing.faction) == "string" then
+        faction = existing.faction
+    end
+    -- Store only plain Lua primitives so WoW SavedVariables serialization never fails.
+    chars[key] = {
+        name = tostring(candidate.name),
+        realm = tostring(realm),
+        normalizedRealm = tostring(normRealm),
+        class = cls,
+        faction = faction,
+        money = candMoney,
+        updated = candUpdated,
+    }
+end
+
+local function ExtractFromLegacyTable(chars, source)
+    if type(source) ~= "table" then
+        return
+    end
+    if type(source.characters) == "table" then
+        for k, v in pairs(source.characters) do
+            if type(v) == "table" then
+                if IsValidCharName(v.name) then
+                    MergeCharEntry(chars, v, nil)
+                else
+                    -- Nested realm -> charKey -> entry format
+                    for _, inner in pairs(v) do
+                        if type(inner) == "table" and IsValidCharName(inner.name) then
+                            MergeCharEntry(chars, inner, type(k) == "string" and k or nil)
+                        end
+                    end
+                end
+            end
+        end
+    end
+    for k, v in pairs(source) do
+        if not SETTINGS_KEYS[k] and type(v) == "table" and IsValidCharName(v.name) then
+            MergeCharEntry(chars, v, nil)
+        end
+    end
+end
+
+local function DeduplicateCharacters(chars)
+    local foreverClient = IsForeverClient()
+    local normalized = {}
+    local byForeverName = {}
+
+    for _, entry in pairs(chars) do
+        if type(entry) == "table" and IsValidCharName(entry.name) then
+            MergeCharEntry(normalized, entry, nil)
+        end
+    end
+
+    if foreverClient then
+        for key, entry in pairs(normalized) do
+            if IsCamwowShard(entry.realm) or IsForeverClient(entry.realm) then
+                local nameKey = lower(entry.name)
+                local prev = byForeverName[nameKey]
+                if not prev then
+                    byForeverName[nameKey] = { key = key, entry = entry }
+                else
+                    local takeNew = entry.updated > prev.entry.updated
+                        or (entry.updated == prev.entry.updated and entry.money > prev.entry.money)
+                    if takeNew then
+                        normalized[prev.key] = nil
+                        byForeverName[nameKey] = { key = key, entry = entry }
+                    else
+                        normalized[key] = nil
+                    end
+                end
+            end
+        end
+    end
+
+    wipe(chars)
+    for key, entry in pairs(normalized) do
+        chars[key] = entry
+    end
+end
+
+local migratedRoot
+
+function AG:GetDB()
+    if type(XiusUIDB) ~= "table" then
+        XiusUIDB = {}
+    end
+    if type(XiusUIDB.accountGold) ~= "table" then
+        XiusUIDB.accountGold = {}
+    end
+    local db = XiusUIDB.accountGold
     if type(db.characters) ~= "table" then
         db.characters = {}
     end
+
+    if migratedRoot ~= db then
+        migratedRoot = db
+        local chars = db.characters
+
+        -- Migrate any flat entries directly on XiusUIDB.accountGold into db.characters
+        for k, v in pairs(db) do
+            if not SETTINGS_KEYS[k] and type(v) == "table" and IsValidCharName(v.name) then
+                MergeCharEntry(chars, v, nil)
+                db[k] = nil
+            end
+        end
+
+        -- Migrate any legacy entries from XiusCoreDB.accountGold into XiusUIDB.accountGold.characters
+        if type(XiusCoreDB) == "table" and type(XiusCoreDB.accountGold) == "table" and XiusCoreDB.accountGold ~= db then
+            local old = XiusCoreDB.accountGold
+            if db.enabled == nil and old.enabled ~= nil then
+                db.enabled = old.enabled and true or false
+            end
+            if db.showAllRealms == nil and old.showAllRealms ~= nil then
+                db.showAllRealms = old.showAllRealms and true or false
+            end
+            if db.hideZero == nil and old.hideZero ~= nil then
+                db.hideZero = old.hideZero and true or false
+            end
+            ExtractFromLegacyTable(chars, old)
+        end
+
+        DeduplicateCharacters(chars)
+    end
+
     if db.enabled == nil then
         db.enabled = true
     end
@@ -75,59 +321,80 @@ function AG:ResetSettings()
     end
 end
 
-local function Hidden(value)
-    return XiusUI.Hidden and XiusUI:Hidden(value)
-end
-
-local function ReadableString(value)
-    if Hidden(value) or type(value) ~= "string" or value == "" then
-        return nil
-    end
-    return value
-end
-
-local function ReadableNumber(value)
-    if Hidden(value) or type(value) ~= "number" then
-        return nil
-    end
-    return value
-end
-
 local function PlayerIdentity()
-    local name = ReadableString(UnitName and UnitName("player"))
-    local realm = ReadableString(GetRealmName and GetRealmName())
-    if not name or name == "Unknown" or not realm then
-        return nil
-    end
-    return name, realm, name .. "-" .. realm
-end
-
-local function ClassFile()
-    local classFile
-    if UnitClassBase then
-        local ok, value = pcall(UnitClassBase, "player")
+    local name, realm, normalizedRealm
+    if UnitFullName then
+        local ok, n, r = pcall(UnitFullName, "player")
         if ok then
-            classFile = ReadableString(value)
+            name = ReadableString(n)
+            realm = ReadableString(r)
         end
     end
-    if not classFile and UnitClass then
+    if not name and UnitName then
+        local ok, n = pcall(UnitName, "player")
+        if ok then
+            name = ReadableString(n)
+        end
+    end
+    if GetRealmName then
+        local ok, r = pcall(GetRealmName)
+        if ok then
+            local displayRealm = ReadableString(r)
+            if displayRealm then
+                realm = displayRealm
+            end
+        end
+    end
+    if GetNormalizedRealmName then
+        local ok, r = pcall(GetNormalizedRealmName)
+        if ok then
+            normalizedRealm = ReadableString(r)
+        end
+    end
+    if not IsValidCharName(name) then
+        return nil
+    end
+    if not realm and normalizedRealm then
+        realm = normalizedRealm
+    end
+    if not realm or realm == "" then
+        return nil
+    end
+    local normBase = NormalizeBaseRealm(normalizedRealm or realm)
+    if normBase == "" then
+        return nil
+    end
+    local key = MakeCharKey(name, normBase)
+    local forever = IsForeverClient(realm)
+    return name, realm, normBase, key, forever
+end
+
+local function ClassToken()
+    local classFile
+    if UnitClass then
         local ok, _, value = pcall(UnitClass, "player")
         if ok then
             classFile = ReadableString(value)
         end
     end
-    return classFile
+    if not classFile and UnitClassBase then
+        local ok, value = pcall(UnitClassBase, "player")
+        if ok then
+            classFile = ReadableString(value)
+        end
+    end
+    return SafeClassToken(classFile)
 end
 
-local function Faction()
+local function PlayerFaction()
     if not UnitFactionGroup then
-        return nil
+        return ""
     end
-    local ok, value = pcall(UnitFactionGroup, "player")
+    local ok, faction = pcall(UnitFactionGroup, "player")
     if not ok then
-        return nil
+        return ""
     end
-    return ReadableString(value)
+    return ReadableString(faction) or ""
 end
 
 local function Money()
@@ -138,32 +405,79 @@ local function Money()
     if not ok then
         return nil
     end
-    return ReadableNumber(value)
+    local n = ReadableNumber(value)
+    if n == nil then
+        return nil
+    end
+    if n < 0 then
+        n = 0
+    end
+    return floor(n + 0.5)
 end
 
-local function Record()
-    local name, realm, key = PlayerIdentity()
-    local copper = Money()
-    if not name or not copper then
+local Record
+
+local function ScheduleIdentityRetry()
+    if retryQueued or retryCount >= 6 then
         return
     end
+    if not (C_Timer and C_Timer.After) then
+        return
+    end
+    retryQueued = true
+    retryCount = retryCount + 1
+    C_Timer.After(0.5, function()
+        retryQueued = false
+        Record(true)
+    end)
+end
+
+Record = function(allowRetry)
+    local name, realm, normRealm, key, forever = PlayerIdentity()
+    local money = Money()
+    if not name or not realm or not normRealm or not key or money == nil then
+        if allowRetry then
+            ScheduleIdentityRetry()
+        end
+        return false
+    end
+    retryCount = 0
     local db = AG:GetDB()
-    local realmTable = db.characters[realm]
-    if type(realmTable) ~= "table" then
-        realmTable = {}
-        db.characters[realm] = realmTable
+    local chars = db.characters
+
+    -- Remove any duplicate shard key for this exact character on WoW Forever.
+    if forever then
+        local nameLower = lower(name)
+        for existingKey, existing in pairs(chars) do
+            if existingKey ~= key and type(existing) == "table" and IsValidCharName(existing.name) then
+                if lower(existing.name) == nameLower and (IsCamwowShard(existing.realm) or IsForeverClient(existing.realm)) then
+                    chars[existingKey] = nil
+                end
+            end
+        end
     end
-    local entry = realmTable[key]
-    if type(entry) ~= "table" then
-        entry = {}
-        realmTable[key] = entry
+
+    local prev = chars[key]
+    local cls = ClassToken()
+    if cls == "" and type(prev) == "table" then
+        cls = SafeClassToken(prev.class)
     end
-    entry.name = name
-    entry.realm = realm
-    entry.classFile = ClassFile() or entry.classFile
-    entry.faction = Faction() or entry.faction
-    entry.copper = copper
-    entry.lastUpdated = time and time() or 0
+    local faction = PlayerFaction()
+    if faction == "" and type(prev) == "table" and type(prev.faction) == "string" then
+        faction = prev.faction
+    end
+
+    -- Plain primitives only for safe WoW SavedVariables serialization.
+    chars[key] = {
+        name = name,
+        realm = realm,
+        normalizedRealm = normRealm,
+        class = cls,
+        faction = faction,
+        money = money,
+        updated = time and time() or 0,
+    }
+    return true
 end
 
 local function Flush()
@@ -172,7 +486,7 @@ local function Flush()
         return
     end
     dirty = false
-    Record()
+    Record(true)
 end
 
 local function QueueRecord()
@@ -189,17 +503,15 @@ local function QueueRecord()
 end
 
 function AG:Prune()
-    local name, realm, key = PlayerIdentity()
+    local _, _, _, key = PlayerIdentity()
     local db = self:GetDB()
-    local keep
-    if realm and key and type(db.characters[realm]) == "table" then
-        keep = db.characters[realm][key]
+    local chars = db.characters
+    for entryKey in pairs(chars) do
+        if entryKey ~= key then
+            chars[entryKey] = nil
+        end
     end
-    db.characters = {}
-    if type(keep) == "table" and realm and key then
-        db.characters[realm] = { [key] = keep }
-    end
-    Record()
+    Record(false)
     if XiusUI.Print then
         XiusUI:Print("Removed saved gold for every character except this one.", true)
     end
@@ -230,8 +542,8 @@ function AG:PromptPrune()
     StaticPopup_Show("XIUSCORE_ACCOUNT_GOLD_PRUNE")
 end
 
-local function ClassColor(classFile)
-    local color = RAID_CLASS_COLORS and classFile and RAID_CLASS_COLORS[classFile]
+local function ClassColor(classToken)
+    local color = RAID_CLASS_COLORS and classToken and RAID_CLASS_COLORS[classToken]
     local r = color and color.r or 1
     local g = color and color.g or 1
     local b = color and color.b or 1
@@ -248,7 +560,7 @@ local function CommaNumber(value)
     end
     local text = tostring(value)
     while true do
-        local replaced, count = string.gsub(text, "^(-?%d+)(%d%d%d)", "%1,%2")
+        local replaced, count = gsub(text, "^(-?%d+)(%d%d%d)", "%1,%2")
         text = replaced
         if count == 0 then
             return text
@@ -304,6 +616,39 @@ local function FormatCoins(copper)
     return concat(coinParts, " ")
 end
 
+function AG:PrintDiagnostics()
+    Record(false)
+    local db = self:GetDB()
+    local chars = db.characters
+    local keys = {}
+    local total = 0
+    for key, entry in pairs(chars) do
+        if type(entry) == "table" and IsValidCharName(entry.name) then
+            keys[#keys + 1] = key
+            total = total + SafeMoney(entry)
+        end
+    end
+    sort(keys, function(a, b)
+        local ma = SafeMoney(chars[a])
+        local mb = SafeMoney(chars[b])
+        if ma ~= mb then
+            return ma > mb
+        end
+        return lower(a) < lower(b)
+    end)
+    XiusUI:Print(format("Account Gold (XiusUIDB.accountGold.characters): %d saved, total %s", #keys, FormatCoins(total)), true)
+    if #keys == 0 then
+        XiusUI:Print("  (no characters recorded yet)", true)
+        return
+    end
+    for i = 1, #keys do
+        local key = keys[i]
+        local entry = chars[key]
+        local realmText = (type(entry.realm) == "string" and entry.realm ~= "") and entry.realm or "(no realm)"
+        XiusUI:Print(format("  %s [%s] — %s", key, realmText, FormatCoins(SafeMoney(entry))), true)
+    end
+end
+
 local function HideDivider()
     if divider then
         divider:Hide()
@@ -335,29 +680,40 @@ end
 local rows = {}
 local rowPool = {}
 
-local function CollectRows(db, playerName, playerRealm)
+local function CollectRows(db, playerName, playerNormRealm, playerKey, forever)
     wipe(rows)
+    local chars = db.characters
+    if type(chars) ~= "table" then
+        return rows
+    end
     local showAll = db.showAllRealms ~= false
     local hideZero = db.hideZero and true or false
-    for realmName, realmTable in pairs(db.characters) do
-        if type(realmTable) == "table" and (showAll or realmName == playerRealm) then
-            for _, entry in pairs(realmTable) do
-                if type(entry) == "table" then
-                    local copper = tonumber(entry.copper) or 0
-                    if not hideZero or copper > 0 then
-                        local row = rowPool[#rows + 1]
-                        if not row then
-                            row = {}
-                            rowPool[#rows + 1] = row
-                        end
-                        row.name = entry.name or "Unknown"
-                        row.realm = entry.realm or realmName or ""
-                        row.classFile = entry.classFile
-                        row.copper = copper
-                        row.other = (entry.realm or realmName) ~= playerRealm
-                        row.current = entry.name == playerName and (entry.realm or realmName) == playerRealm
-                        rows[#rows + 1] = row
+    local playerNameLower = playerName and lower(playerName) or nil
+    for entryKey, entry in pairs(chars) do
+        if type(entry) == "table" and IsValidCharName(entry.name) then
+            local entryRealm = type(entry.realm) == "string" and entry.realm or ""
+            local entryNormRealm = NormalizeBaseRealm(
+                (type(entry.normalizedRealm) == "string" and entry.normalizedRealm ~= "") and entry.normalizedRealm or entryRealm
+            )
+            local entryForever = forever or IsForeverClient(entryRealm)
+            local sameServer = entryForever
+                or (playerNormRealm ~= nil and playerNormRealm ~= "" and entryNormRealm == playerNormRealm)
+            if showAll or sameServer then
+                local copper = SafeMoney(entry)
+                if not hideZero or copper > 0 then
+                    local row = rowPool[#rows + 1]
+                    if not row then
+                        row = {}
+                        rowPool[#rows + 1] = row
                     end
+                    row.name = entry.name
+                    row.realm = entryRealm
+                    row.classFile = SafeClassToken(entry.class)
+                    row.copper = copper
+                    row.other = (not entryForever) and (not sameServer)
+                    row.current = (playerKey ~= nil and entryKey == playerKey)
+                        or (playerNameLower ~= nil and lower(entry.name) == playerNameLower and sameServer)
+                    rows[#rows + 1] = row
                 end
             end
         end
@@ -374,31 +730,17 @@ local function CollectRows(db, playerName, playerRealm)
     return rows
 end
 
-local function ShowTip(moneyFrame)
-    if not moneyFrame or not GameTooltip then
-        return
-    end
-    local db = AG:GetDB()
-    if db.enabled == false then
-        return
-    end
-    Record()
-    local playerName, playerRealm = PlayerIdentity()
-    local rows = CollectRows(db, playerName, playerRealm)
+local function PopulateTooltipLines(db)
+    local playerName, _, playerNormRealm, playerKey, forever = PlayerIdentity()
+    local list = CollectRows(db, playerName, playerNormRealm, playerKey, forever)
     local total = 0
-    for i = 1, #rows do
-        total = total + rows[i].copper
-    end
-
-    GameTooltip:SetOwner(moneyFrame, "ANCHOR_TOPLEFT")
-    GameTooltip:SetText("Account Gold", GOLD_R, GOLD_G, GOLD_B)
-    if GameTooltip.SetMinimumWidth then
-        pcall(GameTooltip.SetMinimumWidth, GameTooltip, 220)
+    for i = 1, #list do
+        total = total + list[i].copper
     end
 
     local markedOther = false
-    for i = 1, #rows do
-        local row = rows[i]
+    for i = 1, #list do
+        local row = list[i]
         if row.other and not markedOther then
             markedOther = true
             GameTooltip:AddLine("Other realms", MUTED_R, MUTED_G, MUTED_B)
@@ -411,13 +753,38 @@ local function ShowTip(moneyFrame)
         end
         GameTooltip:AddDoubleLine(name, FormatCoins(row.copper), 1, 1, 1, 1, 1, 1)
     end
-    if #rows == 0 then
+    if #list == 0 then
         GameTooltip:AddLine("No gold recorded yet.", MUTED_R, MUTED_G, MUTED_B)
     end
 
     GameTooltip:AddLine(" ")
     local dividerLine = GameTooltip:NumLines()
     GameTooltip:AddDoubleLine("Account Total", FormatCoins(total), GOLD_R, GOLD_G, GOLD_B, 1, 1, 1)
+    return dividerLine
+end
+
+local function ShowTip(moneyFrame, append)
+    if not moneyFrame or not GameTooltip then
+        return
+    end
+    local db = AG:GetDB()
+    if db.enabled == false then
+        return
+    end
+    Record(false)
+
+    if append and GameTooltip:IsShown() and (GameTooltip:GetOwner() == moneyFrame or (GameTooltip.IsOwned and GameTooltip:IsOwned(moneyFrame))) then
+        GameTooltip:AddLine(" ")
+        GameTooltip:AddLine("Account Gold", GOLD_R, GOLD_G, GOLD_B)
+    else
+        GameTooltip:SetOwner(moneyFrame, "ANCHOR_TOPLEFT")
+        GameTooltip:SetText("Account Gold", GOLD_R, GOLD_G, GOLD_B)
+    end
+    if GameTooltip.SetMinimumWidth then
+        pcall(GameTooltip.SetMinimumWidth, GameTooltip, 220)
+    end
+
+    local dividerLine = PopulateTooltipLines(db)
     GameTooltip:Show()
     ShowDivider(dividerLine)
 end
@@ -456,42 +823,49 @@ local function HideTip(moneyFrame)
     end
 end
 
-local function HookOne(widget, moneyFrame)
+local function HookOne(widget, moneyFrame, append)
     if not widget or not widget.HookScript or hooked[widget] then
         return
     end
     hooked[widget] = true
     widget:HookScript("OnEnter", function()
-        ShowTip(moneyFrame)
+        ShowTip(moneyFrame, append)
     end)
-    widget:HookScript("OnLeave", function()
-        HideTip(moneyFrame)
-    end)
+    if not append then
+        widget:HookScript("OnLeave", function()
+            HideTip(moneyFrame)
+        end)
+    end
+end
+
+local function HookChildren(...)
+    local moneyFrame = select(1, ...)
+    local count = select("#", ...)
+    for i = 2, count do
+        local child = select(i, ...)
+        local name = child and child.GetName and child:GetName() or ""
+        if find(name, "GoldButton", 1, true) or find(name, "SilverButton", 1, true) or find(name, "CopperButton", 1, true) then
+            HookOne(child, moneyFrame, false)
+        end
+    end
 end
 
 local function HookMoneyFrame(frame)
     if not frame or not frame.HookScript then
         return
     end
-    HookOne(frame, frame)
-    HookOne(frame.GoldButton, frame)
-    HookOne(frame.SilverButton, frame)
-    HookOne(frame.CopperButton, frame)
+    HookOne(frame, frame, false)
+    HookOne(frame.GoldButton, frame, false)
+    HookOne(frame.SilverButton, frame, false)
+    HookOne(frame.CopperButton, frame, false)
     local frameName = frame.GetName and frame:GetName()
     if type(frameName) == "string" and frameName ~= "" then
-        HookOne(_G[frameName .. "GoldButton"], frame)
-        HookOne(_G[frameName .. "SilverButton"], frame)
-        HookOne(_G[frameName .. "CopperButton"], frame)
+        HookOne(_G[frameName .. "GoldButton"], frame, false)
+        HookOne(_G[frameName .. "SilverButton"], frame, false)
+        HookOne(_G[frameName .. "CopperButton"], frame, false)
     end
     if frame.GetChildren then
-        local children = { frame:GetChildren() }
-        for i = 1, #children do
-            local child = children[i]
-            local name = child and child.GetName and child:GetName() or ""
-            if string.find(name, "GoldButton", 1, true) or string.find(name, "SilverButton", 1, true) or string.find(name, "CopperButton", 1, true) then
-                HookOne(child, frame)
-            end
-        end
+        HookChildren(frame, frame:GetChildren())
     end
 end
 
@@ -514,6 +888,16 @@ TryHook = function()
         if ContainerFrameCombinedBags.MoneyFrame then
             HookMoneyFrame(ContainerFrameCombinedBags.MoneyFrame)
         end
+    end
+    if BackpackTokenFrame then
+        WatchShow(BackpackTokenFrame)
+        HookOne(BackpackTokenFrame, BackpackTokenFrame, false)
+        if BackpackTokenFrame.MoneyFrame then
+            HookMoneyFrame(BackpackTokenFrame.MoneyFrame)
+        end
+    end
+    if MainMenuBarBackpackButton then
+        HookOne(MainMenuBarBackpackButton, MainMenuBarBackpackButton, true)
     end
     if ContainerFrame1 then
         WatchShow(ContainerFrame1)
@@ -548,30 +932,14 @@ local moneyWatch = false
 
 function AG:SyncEvents()
     local want = self:GetDB().enabled ~= false
-    if want == moneyWatch then
-        return
-    end
-    moneyWatch = want
-    if want then
+    if not moneyWatch then
+        moneyWatch = true
         XiusUI:RegisterEvent("PLAYER_MONEY", OnMoney)
-        Record()
-    else
-        XiusUI:UnregisterEvent("PLAYER_MONEY", OnMoney)
+    end
+    if want then
+        Record(true)
     end
 end
-
-XiusUI:RegisterEvent("PLAYER_ENTERING_WORLD", function()
-    dirty = false
-    waiting = false
-    if AG:GetDB().enabled ~= false then
-        Record()
-    end
-    TryHook()
-end)
-
-XiusUI:RegisterEvent("PLAYER_LOGOUT", function()
-    Flush()
-end)
 
 local hookQueued = false
 
@@ -591,11 +959,37 @@ local function QueueHook()
     end
 end
 
-XiusUI:RegisterEvent("ADDON_LOADED", function()
+XiusUI:RegisterEvent("ADDON_LOADED", function(_, name)
+    if name == "XiusCore" or name == "XiusUI" then
+        AG:SyncEvents()
+    end
     QueueHook()
 end)
 
-AG:SyncEvents()
+XiusUI:RegisterEvent("PLAYER_LOGIN", function()
+    AG:SyncEvents()
+    Record(true)
+    TryHook()
+end)
+
+XiusUI:RegisterEvent("PLAYER_ENTERING_WORLD", function()
+    dirty = false
+    waiting = false
+    Record(true)
+    TryHook()
+end)
+
+XiusUI:RegisterEvent("PLAYER_LEAVING_WORLD", function()
+    dirty = false
+    waiting = false
+    Record(false)
+end)
+
+XiusUI:RegisterEvent("PLAYER_LOGOUT", function()
+    dirty = false
+    waiting = false
+    Record(false)
+end)
 
 TryHook()
 

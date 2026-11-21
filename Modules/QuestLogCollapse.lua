@@ -1,3 +1,5 @@
+local addonName, ns = ...
+
 --[[
     Quest log collapse arrow.
     Lives in Quality of Life (XiusCoreDB.qol.questLogCollapse).
@@ -5,6 +7,15 @@
     in windowed and fullscreen layouts. Protected map changes wait until
     combat ends.
 ]]
+
+local pairs = pairs
+local type = type
+local tonumber = tonumber
+local select = select
+local pcall = pcall
+local floor = math.floor
+local max = math.max
+local pi = math.pi
 
 local SIZE = 30
 local TOP_GAP = 4
@@ -332,27 +343,31 @@ local function HideStock(frame)
     end
 end
 
-local function CollectChildren(frame)
-    local count = 0
-    local function Store(...)
-        count = select("#", ...)
-        local i
-        for i = 1, count do
-            childList[i] = select(i, ...)
-        end
-        i = count + 1
-        while childList[i] ~= nil do
-            childList[i] = nil
-            i = i + 1
-        end
+local function StoreChildren(...)
+    local count = select("#", ...)
+    for i = 1, count do
+        childList[i] = select(i, ...)
     end
-    local ok = pcall(function()
-        Store(frame:GetChildren())
+    local i = count + 1
+    while childList[i] ~= nil do
+        childList[i] = nil
+        i = i + 1
+    end
+    return count
+end
+
+local function CollectChildren(frame)
+    local ok, count = pcall(function()
+        return StoreChildren(frame:GetChildren())
     end)
     if not ok then
         return 0
     end
-    return count
+    return count or 0
+end
+
+local function IsStockToggle(child)
+    return child.OpenButton and child.CloseButton and child.Refresh
 end
 
 local function HideStockToggles(map)
@@ -360,13 +375,10 @@ local function HideStockToggles(map)
         HideStock(map.SidePanelToggle)
     end
     local count = CollectChildren(map)
-    local i
     for i = 1, count do
         local child = childList[i]
         if child and child ~= btn and not IsSecret(child) then
-            local okMatch, match = pcall(function()
-                return child.OpenButton and child.CloseButton and child.Refresh
-            end)
+            local okMatch, match = pcall(IsStockToggle, child)
             if okMatch and SafeBool(match) then
                 HideStock(child)
             end
@@ -488,6 +500,13 @@ local function RefreshSoon()
     end)
 end
 
+local function SetOpenCVar(on)
+    local setCVar = (C_CVar and C_CVar.SetCVar) or SetCVar
+    if setCVar then
+        pcall(setCVar, "questLogOpen", on and "1" or "0")
+    end
+end
+
 local function Toggle()
     if InCombat() then
         Say("The quest log can't be opened or closed while you are in combat.")
@@ -516,7 +535,7 @@ local function Toggle()
         if map.UpdateSpacerFrameAnchoring then
             pcall(map.UpdateSpacerFrameAnchoring, map)
         end
-        pcall(SetCVar, "questLogOpen", on and "1" or "0")
+        SetOpenCVar(on)
     else
         local ok = false
         if map.HandleUserActionToggleSidePanel then
@@ -528,7 +547,7 @@ local function Toggle()
             if map.UpdateSpacerFrameAnchoring then
                 pcall(map.UpdateSpacerFrameAnchoring, map)
             end
-            pcall(SetCVar, "questLogOpen", on and "1" or "0")
+            SetOpenCVar(on)
         end
     end
 
@@ -662,35 +681,11 @@ local function RestoreStockToggles()
         combatQueued = true
         return
     end
-    local i
     for i = 1, #stockHidden do
         local frame = stockHidden[i]
         if frame and frame.Show and not ArrowEnabled() then
             frame:Show()
         end
-    end
-end
-
-local function SetEnabled(value)
-    local db = QoLDB()
-    if db then
-        db.questLogCollapse = value and true or false
-    end
-    SyncStandalone()
-    if InCombat() then
-        combatQueued = true
-        MarkDirty(btn)
-        return
-    end
-    if not ArrowEnabled() then
-        if btn then
-            btn:Hide()
-        end
-        RestoreStockToggles()
-        return
-    end
-    if TrySetup then
-        TrySetup()
     end
 end
 
@@ -818,27 +813,23 @@ local function BindSlash()
     end
 end
 
-local driver = CreateFrame("Frame")
-driver:RegisterEvent("ADDON_LOADED")
-driver:RegisterEvent("PLAYER_LOGIN")
-driver:RegisterEvent("PLAYER_REGEN_ENABLED")
-driver:SetScript("OnEvent", function(_, event, name)
-    if event == "ADDON_LOADED" then
-        if IsSecret(name) then
-            return
-        end
-        if name == "Blizzard_WorldMap" or name == "OpenMap" or name == "XiusCore" or name == "XiusQuestCollapser" then
-            SyncStandalone()
-            TrySetup()
-        end
+XiusUI:RegisterEvent("ADDON_LOADED", function(_, name)
+    if IsSecret(name) then
         return
     end
-    if event == "PLAYER_REGEN_ENABLED" then
-        if combatQueued or not btn or (btn and btn.pending) then
-            TrySetup()
-        end
-        return
+    if name == "Blizzard_WorldMap" or name == "OpenMap" or name == "XiusCore" or name == "XiusQuestCollapser" then
+        SyncStandalone()
+        TrySetup()
     end
+end)
+
+XiusUI:RegisterEvent("PLAYER_REGEN_ENABLED", function()
+    if combatQueued or not btn or (btn and btn.pending) then
+        TrySetup()
+    end
+end)
+
+XiusUI:RegisterEvent("PLAYER_LOGIN", function()
     SyncStandalone()
     BindSlash()
     TrySetup()
